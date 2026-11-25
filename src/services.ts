@@ -139,7 +139,7 @@ export class GeminiService {
 
     const fast = (env.MODEL_FAST || 'gemini-3.5-flash-lite').trim();
     const balanced = (env.MODEL_BALANCED || 'gemini-4-hydrogen').trim();
-    const deep = (env.MODEL_DEEP || 'gemini-4-neon').trim();
+    const deep = (env.MODEL_DEEP || 'gemini-4-argon').trim();
 
     // 全面改用 3.5 / 3.8 / 4 現役模型作為主路徑與自動備援鏈
     this.models = {
@@ -311,7 +311,7 @@ export class GeminiService {
 
   async probeModels(): Promise<Array<{ model: string; ok: boolean; status: number; detail?: string }>> {
     if (!this.apiKey) throw new Error('找不到環境變數 GOOGLE_CLOUD_API_KEY');
-    const upgrader = (this.env.MODEL_UPGRADER || 'gemini-4-neon').trim();
+    const upgrader = (this.env.MODEL_UPGRADER || 'gemini-4-argon').trim();
     const allModels = Array.from(
       new Set([
         ...this.models.simple,

@@ -25,7 +25,7 @@ export class SelfUpgradeService {
     this.baseBranch = (env.GITHUB_BRANCH || 'main').trim();
     this.projectId = (env.GCP_PROJECT_ID || '').trim();
     this.location = (env.GCP_LOCATION || 'global').trim();
-    this.upgraderModel = (env.MODEL_UPGRADER || 'gemini-4-neon').trim();
+    this.upgraderModel = (env.MODEL_UPGRADER || 'gemini-4-argon').trim();
   }
 
   private formatTime(): string {
