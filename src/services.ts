@@ -145,7 +145,7 @@ export class GeminiService {
     this.models = {
       simple: Array.from(new Set([fast, 'gemini-3.8-flash', balanced])),
       medium: Array.from(new Set([balanced, 'gemini-3.8-flash', fast])),
-      complex: Array.from(new Set([deep, 'gemini-4-argon', balanced, 'gemini-3.8-flash'])),
+      complex: Array.from(new Set([deep, 'gemini-4-argon', balanced, 'gemini-3.8-flash', fast])),
     };
   }
 
@@ -215,7 +215,7 @@ export class GeminiService {
 
       const errText = await res.text();
       errors.push(`[${model} -> ${res.status}] ${errText.slice(0, 160)}`);
-      if (res.status !== 404 && res.status !== 429) {
+      if (res.status !== 403 && res.status !== 404 && res.status !== 429) {
         break;
       }
     }

@@ -1,7 +1,6 @@
 import type { StateService } from './services';
 import type { Env } from './types';
 
-// 核心工具名稱保留清單（嚴禁插件覆蓋或刪除）
 export const PROTECTED_CORE_TOOLS = [
   'get_current_time',
   'manage_todos',
@@ -31,9 +30,9 @@ export class SelfUpgradeService {
   private apiKey: string;
   private projectId: string;
   private location: string;
-  private upgraderModel: string;
+  private candidateModels: string[];
 
-  constructor(private env: Env) {
+  constructor(env: Env) {
     this.githubToken = (env.GITHUB_TOKEN || '').trim();
     this.owner = (env.GITHUB_OWNER || '').trim();
     this.repo = (env.GITHUB_REPO || '').trim();
@@ -41,10 +40,21 @@ export class SelfUpgradeService {
     this.apiKey = (env.GOOGLE_CLOUD_API_KEY || '').trim();
     this.projectId = (env.GCP_PROJECT_ID || '').trim();
     this.location = (env.GCP_LOCATION || 'global').trim();
-    this.upgraderModel = (env.MODEL_UPGRADER || 'gemini-4-neon').trim();
+
+    const primary = (env.MODEL_UPGRADER || 'gemini-4-neon').trim();
+    this.candidateModels = Array.from(
+      new Set(
+        [
+          primary,
+          'gemini-4-argon',
+          'gemini-4-hydrogen',
+          'gemini-3.8-flash',
+          'gemini-3.5-flash-lite',
+        ].filter(Boolean)
+      )
+    );
   }
 
-  // 安全閘門：嚴格驗證檔案路徑白名單
   private validateOperations(ops: UpgradeOperation[]): void {
     if (!Array.isArray(ops) || ops.length === 0) {
       throw new Error('升級計畫未包含任何有效檔案變更');
@@ -63,7 +73,6 @@ export class SelfUpgradeService {
         if (!op.content || op.content.trim().length < 10) {
           throw new Error(`檔案內容無效：${op.path}`);
         }
-        // 禁止插件試圖透過危險動態執行或存取環境變數洩漏金鑰
         if (/\b(eval|new Function)\b/.test(op.content)) {
           throw new Error(`安全攔截：插件 ${op.path} 包含不允許的動態執行語法`);
         }
@@ -89,14 +98,12 @@ export class SelfUpgradeService {
     return (await res.json()) as T;
   }
 
-  // 安全解碼 GitHub API 的 Base64 UTF-8（支援中文）
   private decodeBase64Utf8(b64: string): string {
     const clean = b64.replace(/\n/g, '');
     const bytes = Uint8Array.from(atob(clean), (c) => c.charCodeAt(0));
     return new TextDecoder('utf-8').decode(bytes);
   }
 
-  // 讀取目前 src/plugins/ 下的所有檔案內容
   private async readCurrentPlugins(): Promise<Record<string, string>> {
     const files: Record<string, string> = {};
     try {
@@ -122,17 +129,19 @@ export class SelfUpgradeService {
     return files;
   }
 
-  // 呼叫 Gemini 4 Neon (thinkingLevel: HIGH) 設計並撰寫升級程式碼
-  private async generateUpgradePlan(
-    userInstruction: string,
-    currentPlugins: Record<string, string>
-  ): Promise<UpgradePlan> {
+  private buildEndpoint(model: string): string {
+    const keyParam = `key=${encodeURIComponent(this.apiKey)}`;
     const host =
       this.location === 'global'
         ? 'https://aiplatform.googleapis.com'
         : `https://${this.location}-aiplatform.googleapis.com`;
-    const endpoint = `${host}/v1/projects/${this.projectId}/locations/${this.location}/publishers/google/models/${this.upgraderModel}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
+    return `${host}/v1/projects/${this.projectId}/locations/${this.location}/publishers/google/models/${model}:generateContent?${keyParam}`;
+  }
 
+  private async generateUpgradePlan(
+    userInstruction: string,
+    currentPlugins: Record<string, string>
+  ): Promise<{ plan: UpgradePlan; modelUsed: string }> {
     const existingFilesText = Object.entries(currentPlugins)
       .map(([path, content]) => `--- FILE: ${path} ---\n${content}`)
       .join('\n\n');
@@ -175,42 +184,56 @@ export class SelfUpgradeService {
       `【主人的升級需求】\n${userInstruction}`,
     ].join('\n');
 
-    // 嚴格遵守 Gemini 4 Neon 規範：使用 thinkingConfig.thinkingLevel = "HIGH"，不傳 temperature 與 thinkingBudget
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          thinkingConfig: {
-            thinkingLevel: 'HIGH',
-          },
-        },
-      }),
-    });
+    const errors: string[] = [];
 
-    if (!res.ok) {
-      throw new Error(`Gemini 4 Neon 呼叫失敗 (${res.status}): ${(await res.text()).slice(0, 260)}`);
+    for (const model of this.candidateModels) {
+      const generationConfig = model.startsWith('gemini-4')
+        ? {
+            responseMimeType: 'application/json',
+            thinkingConfig: { thinkingLevel: 'HIGH' },
+          }
+        : {
+            responseMimeType: 'application/json',
+            temperature: 0.2,
+          };
+
+      const res = await fetch(this.buildEndpoint(model), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          generationConfig,
+        }),
+      });
+
+      if (res.ok) {
+        const data = (await res.json()) as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
+        };
+        const rawText = (data.candidates?.[0]?.content?.parts ?? [])
+          .filter((p) => !p.thought && p.text)
+          .map((p) => p.text)
+          .join('')
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```$/i, '')
+          .trim();
+
+        return { plan: JSON.parse(rawText) as UpgradePlan, modelUsed: model };
+      }
+
+      const errText = await res.text();
+      errors.push(`[${model} -> ${res.status}] ${errText.slice(0, 160)}`);
+
+      if (res.status !== 403 && res.status !== 404 && res.status !== 429) {
+        break;
+      }
     }
 
-    const data = (await res.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
-    };
-    const rawText = (data.candidates?.[0]?.content?.parts ?? [])
-      .filter((p) => !p.thought && p.text)
-      .map((p) => p.text)
-      .join('')
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-
-    return JSON.parse(rawText) as UpgradePlan;
+    throw new Error(`所有升級模型皆無法使用：${errors.join(' | ')}`);
   }
 
-  // 使用 GitHub Git Data API 執行單一原子提交並開啟 PR
-  private async createUpgradePR(plan: UpgradePlan): Promise<string> {
+  private async createUpgradePR(plan: UpgradePlan, modelUsed: string): Promise<string> {
     const refData = await this.githubFetch<{ object: { sha: string } }>(
       `/git/ref/heads/${encodeURIComponent(this.baseBranch)}`
     );
@@ -259,7 +282,7 @@ export class SelfUpgradeService {
         head: branchName,
         base: this.baseBranch,
         body: [
-          `由 **${this.upgraderModel} (HIGH)** 自動產生並通過安全路徑白名單驗證。`,
+          `由 **${modelUsed}** 自動產生並通過安全路徑白名單驗證。`,
           '',
           '### 變更檔案',
           ...plan.operations.map((op) => `- \`${op.action.toUpperCase()}\` \`${op.path}\``),
@@ -272,7 +295,6 @@ export class SelfUpgradeService {
     return pr.html_url;
   }
 
-  // 主流程（於背景 waitUntil 執行，不阻塞對話回應）
   async runUpgradeJob(userId: string, instruction: string, stateSvc: StateService): Promise<void> {
     if (!this.githubToken || !this.owner || !this.repo) {
       await stateSvc.saveUpgradeStatus(userId, {
@@ -292,7 +314,7 @@ export class SelfUpgradeService {
 
     try {
       const currentPlugins = await this.readCurrentPlugins();
-      const plan = await this.generateUpgradePlan(instruction, currentPlugins);
+      const { plan, modelUsed } = await this.generateUpgradePlan(instruction, currentPlugins);
 
       if (plan.rejected) {
         await stateSvc.saveUpgradeStatus(userId, {
@@ -304,15 +326,13 @@ export class SelfUpgradeService {
         return;
       }
 
-      // 程式層強制白名單驗證（雙重防護）
       this.validateOperations(plan.operations);
-
-      const prUrl = await this.createUpgradePR(plan);
+      const prUrl = await this.createUpgradePR(plan, modelUsed);
 
       await stateSvc.saveUpgradeStatus(userId, {
         status: 'pr_created',
         request: instruction,
-        summary: plan.summary,
+        summary: `[${modelUsed}] ${plan.summary}`,
         pr_url: prUrl,
         changed_files: plan.operations.map((o) => `${o.action}:${o.path}`),
         updated_at: new Date().toISOString(),
