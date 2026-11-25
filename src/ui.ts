@@ -408,7 +408,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
         }
 
         if (st.is_stale) {
-          upgradeTitle.textContent = '⚠️ 任務已超過 6 分鐘無更新，請點擊下方 Actions 確認';
+          upgradeTitle.textContent = '⚠️ 任務已超過 20 分鐘無心跳更新，請點擊下方 Actions 確認';
           if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         } else if (st.status === 'running') {
           upgradeTitle.textContent = '🔄 GitHub Actions 升級中（已耗時 ' + (st.elapsed_sec || 0) + ' 秒）';

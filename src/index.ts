@@ -74,7 +74,7 @@ app.get('/v1/pet/upgrade/status', async (c) => {
   }
 
   const ageMs = Date.now() - Date.parse(status.updated_at);
-  const isStale = status.status === 'running' && ageMs > 360_000;
+  const isStale = status.status === 'running' && ageMs > 1_200_000;
 
   return c.json({
     ...status,

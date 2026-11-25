@@ -12,6 +12,9 @@ const PROTECTED_CORE_TOOLS = [
   'check_upgrade_status',
 ];
 
+const MODEL_TIMEOUT_MS = 10 * 60 * 1000; // 單一模型最多容忍 10 分鐘
+const HEARTBEAT_INTERVAL_MS = 20 * 1000; // 每 20 秒更新一次心跳與字數進度
+
 const userId = (process.env.INPUT_USER_ID || 'zero_main').trim();
 const instruction = (process.env.INPUT_INSTRUCTION || '').trim();
 const apiKey = (process.env.GOOGLE_CLOUD_API_KEY || '').trim();
@@ -49,17 +52,21 @@ function formatTime() {
 
 async function redisCmd(args) {
   if (!redisUrl || !redisToken) return null;
-  const res = await fetch(redisUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${redisToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(args),
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.result;
+  try {
+    const res = await fetch(redisUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${redisToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(args),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.result;
+  } catch {
+    return null;
+  }
 }
 
 const record = {
@@ -94,7 +101,20 @@ async function logStep(step, message) {
   await redisCmd(['SET', `upgrade:${userId}`, JSON.stringify(record)]);
 }
 
-// 讀取所有允許自我升級的檔案（src/plugins/*.ts 與 src/ui.ts）
+// 原地更新最後一行心跳狀態，避免洗版 20 行日誌緩衝區
+async function updateHeartbeat(message) {
+  const line = `[${formatTime()}] 💓 ${message}`;
+  console.log(`(heartbeat) ${line}`);
+  record.step = 'generating_code';
+  if (record.logs.length > 0 && record.logs[record.logs.length - 1].includes('💓')) {
+    record.logs[record.logs.length - 1] = line;
+  } else {
+    record.logs = [...record.logs, line].slice(-20);
+  }
+  record.updated_at = new Date().toISOString();
+  await redisCmd(['SET', `upgrade:${userId}`, JSON.stringify(record)]);
+}
+
 function readEditableFiles() {
   const files = {};
   const pluginsDir = path.resolve('src/plugins');
@@ -118,7 +138,6 @@ function readEditableFiles() {
   return files;
 }
 
-// 驗證 src/ui.ts 的核心契約與內嵌 <script> 語法
 function validateUiContent(content) {
   if (!/\bexport\s+const\s+CHAT_HTML\b/.test(content)) {
     throw new Error('安全攔截：src/ui.ts 必須匯出 export const CHAT_HTML');
@@ -144,7 +163,9 @@ function validateUiContent(content) {
   try {
     vm.runInNewContext(transpiled.outputText, sandbox, { timeout: 1000 });
   } catch (err) {
-    throw new Error(`安全攔截：src/ui.ts 無法獨立載入（禁止外部 import 或執行期錯誤）：${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `安全攔截：src/ui.ts 無法獨立載入（禁止外部 import 或執行期錯誤）：${err instanceof Error ? err.message : String(err)}`
+    );
   }
 
   const html = sandbox.exports.CHAT_HTML ?? sandbox.module.exports.CHAT_HTML;
@@ -159,7 +180,6 @@ function validateUiContent(content) {
     }
   }
 
-  // 逐一檢查所有內嵌 <script> 語法（支援一般腳本與 type="module"）
   const scriptRegex = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
   let match;
   let scriptIndex = 0;
@@ -221,12 +241,65 @@ function validateOperations(ops) {
   }
 }
 
-function buildEndpoint(model) {
+function buildStreamEndpoint(model) {
   const host =
     location === 'global'
       ? 'https://aiplatform.googleapis.com'
       : `https://${location}-aiplatform.googleapis.com`;
-  return `${host}/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  return `${host}/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+}
+
+// 解析 Vertex AI SSE 串流，同時累積思考字數與最終輸出字數
+async function readSseStream(res, progress) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let textOutput = '';
+
+  const consumeLine = (rawLine) => {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) return;
+    const jsonStr = line.slice(5).trim();
+    if (!jsonStr || jsonStr === '[DONE]') return;
+
+    try {
+      const chunk = JSON.parse(jsonStr);
+      const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+      for (const p of parts) {
+        if (p.thought && p.text) {
+          progress.thoughtChars += p.text.length;
+        } else if (!p.thought && p.text) {
+          textOutput += p.text;
+          progress.outputChars += p.text.length;
+        }
+      }
+    } catch {
+      // 忽略非完整 JSON 行
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      consumeLine(line);
+    }
+  }
+
+  const tail = buffer + decoder.decode();
+  if (tail.trim()) {
+    for (const line of tail.split('\n')) {
+      consumeLine(line);
+    }
+  }
+
+  return textOutput
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
 }
 
 async function generatePlan(editableFiles) {
@@ -279,22 +352,30 @@ async function generatePlan(editableFiles) {
   const errors = [];
 
   for (const model of candidateModels) {
-    await logStep('generating_code', `GitHub Actions 正在呼叫 ${model} 深度思考並撰寫程式碼...`);
+    await logStep('generating_code', `GitHub Actions 正在呼叫 ${model}（SSE 串流，最長等待 10 分鐘）...`);
 
     const generationConfig = model.startsWith('gemini-4')
       ? {
           responseMimeType: 'application/json',
-          thinkingConfig: { thinkingLevel: 'HIGH' },
+          thinkingConfig: { thinkingLevel: 'HIGH', includeThoughts: true },
         }
       : {
           responseMimeType: 'application/json',
           temperature: 0.2,
         };
 
+    const progress = { thoughtChars: 0, outputChars: 0, startedAt: Date.now() };
+    const heartbeatTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - progress.startedAt) / 1000);
+      void updateHeartbeat(
+        `${model} 執行中（${sec}s｜思考 ${progress.thoughtChars} 字｜輸出 ${progress.outputChars} 字）`
+      );
+    }, HEARTBEAT_INTERVAL_MS);
+
     try {
-      const res = await fetch(buildEndpoint(model), {
+      const res = await fetch(buildStreamEndpoint(model), {
         method: 'POST',
-        signal: AbortSignal.timeout(180000),
+        signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
@@ -303,17 +384,15 @@ async function generatePlan(editableFiles) {
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        const rawText = (data.candidates?.[0]?.content?.parts ?? [])
-          .filter((p) => !p.thought && p.text)
-          .map((p) => p.text)
-          .join('')
-          .replace(/^```(?:json)?\s*/i, '')
-          .replace(/\s*```$/i, '')
-          .trim();
-
-        await logStep('code_generated', `${model} 已完成程式碼生成`);
+      if (res.ok && res.body) {
+        const rawText = await readSseStream(res, progress);
+        if (!rawText) {
+          throw new Error(`${model} 串流結束但未回傳有效 JSON 內容`);
+        }
+        await logStep(
+          'code_generated',
+          `${model} 已完成程式碼生成（思考 ${progress.thoughtChars} 字，輸出 ${progress.outputChars} 字）`
+        );
         return { plan: JSON.parse(rawText), modelUsed: model };
       }
 
@@ -327,7 +406,9 @@ async function generatePlan(editableFiles) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`[${model} 異常] ${msg}`);
-      await logStep('model_fallback', `${model} 發生異常 (${msg.slice(0, 60)})，切換備援`);
+      await logStep('model_fallback', `${model} 發生異常 (${msg.slice(0, 80)})，切換備援`);
+    } finally {
+      clearInterval(heartbeatTimer);
     }
   }
 
