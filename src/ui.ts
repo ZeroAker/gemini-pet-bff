@@ -164,7 +164,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
     .modal-card.wide { max-width: 480px; }
     .modal-card h3 { font-size: 16px; }
     .modal-card label { font-size: 12px; color: #9aa3bd; display: block; margin-bottom: 4px; }
-    .modal-card input, .modal-card select {
+    .modal-card input:not([type="checkbox"]), .modal-card select {
       width: 100%; background: #0f111a; color: #fff; border: 1px solid #2f3650;
       border-radius: 8px; padding: 9px 10px; font-size: 13px; outline: none;
     }
@@ -179,6 +179,28 @@ export const CHAT_HTML = `<!DOCTYPE html>
     }
     .proactive-form-row { display: flex; gap: 8px; }
     .proactive-form-row > div { flex: 1; }
+    .proactive-ai-check {
+      display: flex !important;
+      align-items: center;
+      gap: 8px;
+      background: #171b2d;
+      border: 1px solid #323b5e;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 0 !important;
+      cursor: pointer;
+      color: #e6e8f0 !important;
+      font-size: 12px !important;
+      user-select: none;
+    }
+    .proactive-ai-check:hover { border-color: #6c5ce7; }
+    .proactive-ai-check input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #6c5ce7;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
     .rule-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; }
     .rule-item {
       background: #121521; border: 1px solid #282f47; border-radius: 10px;
@@ -192,11 +214,22 @@ export const CHAT_HTML = `<!DOCTYPE html>
       font-size: 11px; padding: 1px 6px; border-radius: 6px;
       background: #252b42; color: #a29bfe; border: 1px solid #384166;
     }
+    .rule-badge.ai-badge {
+      background: rgba(108, 92, 231, 0.22);
+      color: #ffeaa7;
+      border-color: #6c5ce7;
+    }
     .rule-msg { font-size: 12px; color: #9aa3bd; word-break: break-word; }
-    .rule-actions { display: flex; gap: 5px; flex-shrink: 0; }
+    .rule-actions { display: flex; gap: 5px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
     .btn-sm {
       background: #23283a; color: #cfd5e6; border: 1px solid #323952;
       border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer;
+    }
+    .btn-sm:hover { border-color: #6c5ce7; color: #fff; }
+    .btn-sm.ai-active {
+      background: rgba(108, 92, 231, 0.25);
+      color: #ffeaa7;
+      border-color: #6c5ce7;
     }
     .btn-sm.danger { color: #ff7675; border-color: #5c2b33; }
     .care-hero {
@@ -360,7 +393,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       <div class="proactive-form">
         <div class="proactive-form-row">
           <div>
-            <label>排程標題</label>
+            <label>排程標題（主題）</label>
             <input id="ruleTitleInput" type="text" placeholder="例如：喝水提醒" />
           </div>
           <div>
@@ -383,9 +416,13 @@ export const CHAT_HTML = `<!DOCTYPE html>
           </div>
         </div>
         <div>
-          <label>提醒訊息內容</label>
+          <label>提醒訊息內容（開啟 AI 生成時作為參考提示與備用內容）</label>
           <input id="ruleMsgInput" type="text" placeholder="主人～記得喝口水休息一下喔！" />
         </div>
+        <label class="proactive-ai-check" for="ruleAiGenInput">
+          <input id="ruleAiGenInput" type="checkbox" />
+          <span>✨ 每次由 AI 隨機生成主題句子（依標題與提示即時生成，失敗時退回原訊息）</span>
+        </label>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:2px;">
           <button class="btn-icon" id="testProactiveBubbleBtn">立即檢查到期</button>
           <button class="btn-primary" id="addRuleBtn">＋ 新增排程</button>
@@ -837,11 +874,13 @@ export const CHAT_HTML = `<!DOCTYPE html>
     var ruleTimeInputEl = document.getElementById('ruleTimeInput');
     var ruleIntervalInputEl = document.getElementById('ruleIntervalInput');
     var ruleMsgInputEl = document.getElementById('ruleMsgInput');
+    var ruleAiGenInputEl = document.getElementById('ruleAiGenInput');
     var proactiveBubbleEl = document.getElementById('proactiveBubble');
     var proactiveBubbleIconEl = document.getElementById('proactiveBubbleIcon');
     var proactiveBubbleTitleEl = document.getElementById('proactiveBubbleTitle');
     var proactiveBubbleTextEl = document.getElementById('proactiveBubbleText');
     var activeBubbleRule = null;
+    var isGeneratingProactiveAi = false;
 
     function createDefaultProactiveStore() {
       var nowIso = new Date().toISOString();
@@ -856,6 +895,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
             time: '09:00',
             intervalMinutes: 60,
             enabled: true,
+            aiGenerated: false,
             createdAt: nowIso,
             lastTriggeredAt: null
           },
@@ -867,6 +907,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
             time: '00:00',
             intervalMinutes: 120,
             enabled: true,
+            aiGenerated: false,
             createdAt: nowIso,
             lastTriggeredAt: null
           }
@@ -882,6 +923,11 @@ export const CHAT_HTML = `<!DOCTYPE html>
         if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.rules)) {
           return createDefaultProactiveStore();
         }
+        parsed.rules.forEach(function (r) {
+          if (r && typeof r === 'object') {
+            r.aiGenerated = Boolean(r.aiGenerated);
+          }
+        });
         return parsed;
       } catch (e) {
         return createDefaultProactiveStore();
@@ -936,15 +982,30 @@ export const CHAT_HTML = `<!DOCTYPE html>
         titleRow.appendChild(nameEl);
         titleRow.appendChild(badgeEl);
 
+        if (rule.aiGenerated) {
+          var aiBadgeEl = document.createElement('span');
+          aiBadgeEl.className = 'rule-badge ai-badge';
+          aiBadgeEl.textContent = '✨ AI 隨機生成';
+          titleRow.appendChild(aiBadgeEl);
+        }
+
         var msgEl = document.createElement('div');
         msgEl.className = 'rule-msg';
-        msgEl.textContent = rule.message;
+        msgEl.textContent = (rule.aiGenerated ? '參考提示：' : '') + rule.message;
 
         info.appendChild(titleRow);
         info.appendChild(msgEl);
 
         var actions = document.createElement('div');
         actions.className = 'rule-actions';
+
+        var aiToggleBtn = document.createElement('button');
+        aiToggleBtn.className = 'btn-sm' + (rule.aiGenerated ? ' ai-active' : '');
+        aiToggleBtn.textContent = rule.aiGenerated ? '✨ AI隨機:開' : '✨ AI隨機:關';
+        aiToggleBtn.title = '切換每次由 AI 隨機生成適合主題的句子';
+        aiToggleBtn.onclick = function () {
+          toggleProactiveRuleAi(rule.id);
+        };
 
         var toggleBtn = document.createElement('button');
         toggleBtn.className = 'btn-sm';
@@ -960,6 +1021,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
           deleteProactiveRule(rule.id);
         };
 
+        actions.appendChild(aiToggleBtn);
         actions.appendChild(toggleBtn);
         actions.appendChild(delBtn);
 
@@ -967,6 +1029,15 @@ export const CHAT_HTML = `<!DOCTYPE html>
         item.appendChild(actions);
         proactiveRuleListEl.appendChild(item);
       });
+    }
+
+    function toggleProactiveRuleAi(ruleId) {
+      var store = loadProactiveStore();
+      store.rules.forEach(function (r) {
+        if (r.id === ruleId) r.aiGenerated = !r.aiGenerated;
+      });
+      saveProactiveStore(store);
+      renderProactivePanel();
     }
 
     function toggleProactiveRule(ruleId) {
@@ -985,23 +1056,68 @@ export const CHAT_HTML = `<!DOCTYPE html>
       renderProactivePanel();
     }
 
-    function showProactiveNotification(rule) {
+    async function resolveProactiveMessageText(rule) {
+      var fallbackMsg = rule.message || '主人～記得休息一下喝口水喔！🐾';
+      if (!rule.aiGenerated) {
+        return { text: fallbackMsg, aiUsed: false };
+      }
+      var cfg = getConfig();
+      if (!cfg.token) {
+        return { text: fallbackMsg, aiUsed: false };
+      }
+      try {
+        var prompt = '【主動關懷觸發】請根據主題「' + (rule.title || '日常關懷') + '」與參考提示「' + fallbackMsg + '」，以桌寵溫暖可愛的語氣，即時隨機生成一句自然且不重複的繁體中文關懷句子（約 20～60 字，請直接輸出那句給主人的關懷話語，不要加引號或其他解釋）。';
+        var data = await sendInteractionRequest(prompt, '主動關懷 AI 隨機生成');
+        if (data && !data.error && typeof data.reply === 'string' && data.reply.trim().length > 0) {
+          if (data.pet_state && typeof window.syncPetStatsFromBackend === 'function') {
+            window.syncPetStatsFromBackend(data.pet_state.affection, data.pet_state.energy);
+          }
+          return { text: data.reply.trim(), aiUsed: true };
+        }
+      } catch (e) {
+        // AI 生成失敗時自動退回原本設定的 message
+      }
+      return { text: fallbackMsg, aiUsed: false };
+    }
+
+    function showProactiveNotification(rule, displayMessage, aiUsed) {
+      var finalMsg = displayMessage || rule.message || '';
       activeBubbleRule = rule;
-      proactiveBubbleIconEl.textContent = rule.icon || '🐾';
-      proactiveBubbleTitleEl.textContent = '🔔 ' + (rule.title || '主動關懷提醒');
-      proactiveBubbleTextEl.textContent = rule.message || '';
+      proactiveBubbleIconEl.textContent = rule.icon || (rule.aiGenerated ? '✨' : '🐾');
+      proactiveBubbleTitleEl.textContent = '🔔 ' + (rule.title || '主動關懷提醒') + (rule.aiGenerated ? ' · ✨ AI 隨機生成' : '');
+      proactiveBubbleTextEl.textContent = finalMsg;
       proactiveBubbleEl.classList.add('show');
       petEmojiEl.textContent = EMOJI_MAP.caring;
+      triggerAvatarBounce();
 
       var nowTs = Date.now();
       var metaLabel = '主動關懷 · ' + formatScheduleBadge(rule);
+      if (rule.aiGenerated) {
+        metaLabel += aiUsed ? ' · ✨ AI 隨機生成' : ' · 備用訊息';
+      }
       var log = loadLocalLog();
-      log.push({ role: 'bot', text: rule.message, meta: metaLabel, time: nowTs });
+      log.push({ role: 'bot', text: finalMsg, meta: metaLabel, time: nowTs });
       saveLocalLog(log);
-      renderMessage('bot', rule.message, metaLabel, nowTs);
+      renderMessage('bot', finalMsg, metaLabel, nowTs);
+    }
+
+    async function triggerProactiveRule(rule) {
+      if (!rule.aiGenerated) {
+        showProactiveNotification(rule, rule.message, false);
+        return;
+      }
+      if (isGeneratingProactiveAi) return;
+      isGeneratingProactiveAi = true;
+      try {
+        var result = await resolveProactiveMessageText(rule);
+        showProactiveNotification(rule, result.text, result.aiUsed);
+      } finally {
+        isGeneratingProactiveAi = false;
+      }
     }
 
     function checkDueProactiveRules(forceTriggerFirst) {
+      if (isGeneratingProactiveAi && !forceTriggerFirst) return false;
       var store = loadProactiveStore();
       if (!store.globalEnabled) return false;
 
@@ -1061,7 +1177,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
 
       if (triggeredRule) {
         saveProactiveStore(store);
-        showProactiveNotification(triggeredRule);
+        triggerProactiveRule(triggeredRule);
         return true;
       }
       return false;
@@ -1100,6 +1216,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       var msg = ruleMsgInputEl.value.trim() || '主人～記得休息一下喝口水喔！🐾';
       var timeVal = ruleTimeInputEl.value.trim() || '09:00';
       var intervalVal = Math.max(1, parseInt(ruleIntervalInputEl.value, 10) || 60);
+      var aiGenVal = Boolean(ruleAiGenInputEl && ruleAiGenInputEl.checked);
 
       var store = loadProactiveStore();
       store.rules.push({
@@ -1110,12 +1227,14 @@ export const CHAT_HTML = `<!DOCTYPE html>
         time: timeVal,
         intervalMinutes: intervalVal,
         enabled: true,
+        aiGenerated: aiGenVal,
         createdAt: new Date().toISOString(),
         lastTriggeredAt: null
       });
       saveProactiveStore(store);
       ruleTitleInputEl.value = '';
       ruleMsgInputEl.value = '';
+      if (ruleAiGenInputEl) ruleAiGenInputEl.checked = false;
       renderProactivePanel();
     };
 
@@ -1135,7 +1254,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
         return;
       }
       var store = loadProactiveStore();
-      var summaryText = '請使用 manage_proactive_messages 工具同步我的主動訊息設定，目前總開關為 ' + (store.globalEnabled ? 'true' : 'false') + '，共有 ' + store.rules.length + ' 筆規則：' + JSON.stringify(store.rules);
+      var summaryText = '請使用 manage_proactive_messages 工具同步我的主動訊息設定（包含每筆規則的 ai_generated 欄位），目前總開關為 ' + (store.globalEnabled ? 'true' : 'false') + '，共有 ' + store.rules.length + ' 筆規則：' + JSON.stringify(store.rules);
       proactiveModalEl.classList.remove('open');
       inputEl.value = summaryText;
       sendMessage();
