@@ -4,7 +4,6 @@ import type { Env, InteractRequest } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
 
-// 暫時以 HTTP 200 回傳錯誤細節，避免 HTTP Shortcuts 隱藏錯誤內容
 app.onError((err, c) => {
   return c.json(
     {
@@ -15,24 +14,13 @@ app.onError((err, c) => {
   );
 });
 
-app.get('/health', (c) => c.json({ status: 'ok', service: 'gemini-pet-bff' }));
-
-// 新增：直接用手機瀏覽器測試 Google Cloud Gemini 連線
-app.get('/test-gemini', async (c) => {
-  try {
-    const geminiSvc = new GeminiService(c.env);
-    const res = await geminiSvc.generateReply({
-      userMessage: '打個招呼',
-      devicePlatform: 'android',
-      state: { affection: 50, energy: 80, last_device: 'android', updated_at: new Date().toISOString() },
-      memories: [],
-      history: [],
-    });
-    return c.json({ ok: true, result: res });
-  } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
-  }
-});
+app.get('/health', (c) =>
+  c.json({
+    status: 'ok',
+    service: 'gemini-pet-bff',
+    loaded_env_keys: Object.keys(c.env),
+  })
+);
 
 app.get('/test-models', async (c) => {
   try {
@@ -43,6 +31,27 @@ app.get('/test-models', async (c) => {
       project: c.env.GCP_PROJECT_ID || '(auto)',
       results,
     });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// 支援用 ?q=... 直接在手機瀏覽器測試動態路由與 Agent 工具
+app.get('/test-gemini', async (c) => {
+  try {
+    const q = c.req.query('q') || '打個招呼';
+    const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+    const geminiSvc = new GeminiService(c.env);
+    const res = await geminiSvc.generateReply({
+      userId: 'test_user',
+      userMessage: q,
+      devicePlatform: 'android',
+      state: { affection: 50, energy: 80, last_device: 'android', updated_at: new Date().toISOString() },
+      memories: [],
+      history: [],
+      stateSvc,
+    });
+    return c.json({ ok: true, query: q, result: res });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
@@ -68,7 +77,7 @@ app.post('/v1/pet/interact', async (c) => {
 
   const locked = await stateSvc.acquireLock(userId);
   if (!locked) {
-    return c.json({ reply: '⚠️ 診斷錯誤：裝置鎖定中，請稍候 15 秒再試' }, 200);
+    return c.json({ reply: '⚠️ 診斷錯誤：裝置鎖定中，請稍候再試' }, 200);
   }
 
   try {
@@ -79,12 +88,14 @@ app.post('/v1/pet/interact', async (c) => {
     ]);
 
     const aiResult = await geminiSvc.generateReply({
+      userId,
       userMessage: body.input.content,
       devicePlatform: body.device.platform,
       deviceContext: body.device.context,
       state,
       memories,
       history,
+      stateSvc,
     });
 
     const nextState = {
@@ -111,6 +122,7 @@ app.post('/v1/pet/interact', async (c) => {
       reply: aiResult.reply,
       action: { emotion: aiResult.emotion },
       pet_state: nextState,
+      meta: aiResult.meta,
     });
   } finally {
     await stateSvc.releaseLock(userId);
