@@ -32,7 +32,9 @@ export const CHAT_HTML = `<!DOCTYPE html>
       background: linear-gradient(135deg, #6c5ce7, #a29bfe);
       display: flex; align-items: center; justify-content: center;
       font-size: 20px; flex-shrink: 0;
+      transition: transform 0.25s ease;
     }
+    .avatar.bounce { transform: scale(1.22) rotate(6deg); }
     .title { font-size: 15px; font-weight: 600; }
     .stats { font-size: 12px; color: #9aa3bd; margin-top: 2px; }
     .header-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
@@ -45,6 +47,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       background: #6c5ce7; color: #fff; border: none;
       border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
     }
+    .btn-primary:disabled, .btn-icon:disabled { opacity: 0.5; cursor: not-allowed; }
     #upgradeBar {
       display: none;
       background: #141827;
@@ -158,7 +161,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       width: 100%; max-width: 360px; padding: 18px; display: flex; flex-direction: column; gap: 12px;
       max-height: 88dvh; overflow-y: auto;
     }
-    .modal-card.wide { max-width: 460px; }
+    .modal-card.wide { max-width: 480px; }
     .modal-card h3 { font-size: 16px; }
     .modal-card label { font-size: 12px; color: #9aa3bd; display: block; margin-bottom: 4px; }
     .modal-card input, .modal-card select {
@@ -196,6 +199,85 @@ export const CHAT_HTML = `<!DOCTYPE html>
       border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer;
     }
     .btn-sm.danger { color: #ff7675; border-color: #5c2b33; }
+    .care-hero {
+      background: linear-gradient(135deg, #1b1f33, #232946);
+      border: 1px solid #343d63;
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: relative;
+      overflow: hidden;
+    }
+    .care-stage-avatar {
+      width: 58px; height: 58px; border-radius: 50%;
+      background: rgba(108, 92, 231, 0.25);
+      border: 2px solid #7c6ff7;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 30px; flex-shrink: 0;
+      transition: transform 0.25s ease;
+    }
+    .care-stage-avatar.anim { transform: scale(1.25) rotate(-8deg); }
+    .care-bars { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .care-bar-row { display: flex; flex-direction: column; gap: 3px; }
+    .care-bar-label {
+      display: flex; justify-content: space-between; font-size: 12px; color: #cfd5e6;
+    }
+    .care-bar-track {
+      height: 8px; background: #0f111a; border-radius: 99px; overflow: hidden; border: 1px solid #2b324d;
+    }
+    .care-bar-fill {
+      height: 100%; border-radius: 99px; transition: width 0.35s ease;
+    }
+    .care-bar-fill.energy { background: linear-gradient(90deg, #00b894, #55efc4); }
+    .care-bar-fill.affection { background: linear-gradient(90deg, #fd79a8, #ff7675); }
+    .care-feedback {
+      background: #121521; border: 1px solid #2b324d; border-radius: 10px;
+      padding: 9px 11px; font-size: 12px; color: #e6e8f0; min-height: 38px;
+      display: flex; align-items: center; line-height: 1.4;
+    }
+    .snack-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .snack-card {
+      background: #121521; border: 1px solid #2b324d; border-radius: 10px;
+      padding: 10px 8px; display: flex; flex-direction: column; align-items: center;
+      gap: 4px; cursor: pointer; text-align: center; transition: border-color 0.2s, transform 0.15s;
+    }
+    .snack-card:hover:not(:disabled) { border-color: #7c6ff7; transform: translateY(-2px); }
+    .snack-card:disabled { opacity: 0.5; cursor: not-allowed; }
+    .snack-emoji { font-size: 24px; }
+    .snack-name { font-size: 12px; font-weight: 600; color: #e6e8f0; }
+    .snack-boost { font-size: 11px; color: #55efc4; }
+    .game-tabs { display: flex; gap: 6px; margin-bottom: 6px; }
+    .game-tab {
+      flex: 1; background: #121521; color: #9aa3bd; border: 1px solid #282f47;
+      border-radius: 8px; padding: 7px; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .game-tab.active { background: #262c47; color: #fff; border-color: #6c5ce7; }
+    .game-box {
+      background: #121521; border: 1px solid #282f47; border-radius: 10px;
+      padding: 12px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .rps-row { display: flex; gap: 8px; justify-content: center; }
+    .rps-btn {
+      flex: 1; background: #1d2236; color: #fff; border: 1px solid #353e61;
+      border-radius: 10px; padding: 10px 6px; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: border-color 0.2s, transform 0.15s;
+    }
+    .rps-btn:hover:not(:disabled) { border-color: #a29bfe; transform: scale(1.04); }
+    .rps-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .heart-arena {
+      position: relative; height: 140px; background: #0c0e17;
+      border: 1px dashed #353e61; border-radius: 10px; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      user-select: none;
+    }
+    .heart-target {
+      position: absolute; font-size: 24px; cursor: pointer;
+      background: none; border: none; padding: 4px;
+      transition: transform 0.1s ease;
+    }
+    .heart-target:active { transform: scale(1.35); }
   </style>
 </head>
 <body>
@@ -208,6 +290,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       </div>
     </div>
     <div class="header-actions">
+      <button class="btn-icon" id="careGameBtn">🎮 餵食與遊戲</button>
       <button class="btn-icon" id="proactiveBtn">🔔 主動關懷</button>
       <button class="btn-icon" id="upgradeBtn">升級進度</button>
       <button class="btn-icon" id="settingsBtn">設定</button>
@@ -225,7 +308,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
 
   <div id="proactiveBubble">
     <div class="proactive-bubble-body">
-      <div class="proactive-bubble-icon">🐾</div>
+      <div class="proactive-bubble-icon" id="proactiveBubbleIcon">🐾</div>
       <div class="proactive-bubble-content">
         <div class="proactive-bubble-title" id="proactiveBubbleTitle">主動關懷提醒</div>
         <div class="proactive-bubble-text" id="proactiveBubbleText"></div>
@@ -321,6 +404,91 @@ export const CHAT_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="modal" id="careGameModal">
+    <div class="modal-card wide">
+      <h3>🎮 桌寵餵食與互動小遊戲</h3>
+      <div class="care-hero">
+        <div class="care-stage-avatar" id="careStageAvatar">😸</div>
+        <div class="care-bars">
+          <div class="care-bar-row">
+            <div class="care-bar-label">
+              <span>⚡ 活力值 (Energy)</span>
+              <strong id="careEnergyText">75 / 100</strong>
+            </div>
+            <div class="care-bar-track">
+              <div class="care-bar-fill energy" id="careEnergyBar" style="width:75%;"></div>
+            </div>
+          </div>
+          <div class="care-bar-row">
+            <div class="care-bar-label">
+              <span>💖 好感度 (Affection)</span>
+              <strong id="careAffectionText">60 / 100</strong>
+            </div>
+            <div class="care-bar-track">
+              <div class="care-bar-fill affection" id="careAffectionBar" style="width:60%;"></div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:#a29bfe;margin-top:2px;" id="careMoodText">狀態：活力充沛・心情愉快</div>
+        </div>
+      </div>
+
+      <div class="care-feedback" id="careFeedbackBox">點選下方點心餵食桌寵，或陪桌寵玩場小遊戲補充活力吧！✨</div>
+
+      <div>
+        <label style="margin-bottom:6px;">🍙 點心餵食區（點擊餵食補充活力）</label>
+        <div class="snack-grid">
+          <button class="snack-card" id="feedFishBtn">
+            <span class="snack-emoji">🐟</span>
+            <span class="snack-name">香烤小魚乾</span>
+            <span class="snack-boost">活力 +15 · 好感 +3</span>
+          </button>
+          <button class="snack-card" id="feedCakeBtn">
+            <span class="snack-emoji">🍰</span>
+            <span class="snack-name">草莓蛋糕</span>
+            <span class="snack-boost">活力 +25 · 好感 +5</span>
+          </button>
+          <button class="snack-card" id="feedCoffeeBtn">
+            <span class="snack-emoji">☕</span>
+            <span class="snack-name">特調咖啡</span>
+            <span class="snack-boost">活力 +35 · 好感 +4</span>
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <label style="margin-bottom:6px;">🎲 互動小遊戲區</label>
+        <div class="game-tabs">
+          <button class="game-tab active" id="tabRpsBtn">✊✌️🖐️ 猜拳大作戰</button>
+          <button class="game-tab" id="tabHeartsBtn">💖 點擊接愛心</button>
+        </div>
+
+        <div class="game-box" id="gameRpsPanel">
+          <div style="font-size:12px;color:#cfd5e6;text-align:center;" id="rpsStatusText">選擇你要出的拳，跟桌寵一決高下吧！</div>
+          <div class="rps-row">
+            <button class="rps-btn" id="rpsRockBtn">✊ 石頭</button>
+            <button class="rps-btn" id="rpsScissorsBtn">✌️ 剪刀</button>
+            <button class="rps-btn" id="rpsPaperBtn">🖐️ 布</button>
+          </div>
+        </div>
+
+        <div class="game-box" id="gameHeartsPanel" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#cfd5e6;">
+            <span id="heartTimerText">限時：10 秒</span>
+            <span id="heartScoreText">接到愛心：0 顆</span>
+          </div>
+          <div class="heart-arena" id="heartArena">
+            <button class="btn-primary" id="startHeartGameBtn">▶️ 開始 10 秒接愛心挑戰</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-icon" id="shareCareChatBtn">💬 讓桌寵回應這次互動</button>
+        <button class="btn-icon" id="closeCareModalBtn">關閉</button>
+      </div>
+    </div>
+  </div>
+
   <script id="scripts-core">
     var EMOJI_MAP = {
       idle: '🐱',
@@ -342,6 +510,13 @@ export const CHAT_HTML = `<!DOCTYPE html>
 
     function markUserActivity() {
       lastUserActivityAt = Date.now();
+    }
+
+    function triggerAvatarBounce() {
+      petEmojiEl.classList.add('bounce');
+      setTimeout(function () {
+        petEmojiEl.classList.remove('bounce');
+      }, 320);
     }
 
     function detectPlatform() {
@@ -496,9 +671,14 @@ export const CHAT_HTML = `<!DOCTYPE html>
         var reply = data.reply || JSON.stringify(data);
         var emotion = (data.action && data.action.emotion) ? data.action.emotion : 'idle';
         petEmojiEl.textContent = EMOJI_MAP[emotion] || '🐱';
+        triggerAvatarBounce();
 
         if (data.pet_state) {
-          petStatsEl.textContent = '好感度 ' + data.pet_state.affection + ' ｜ 活力 ' + data.pet_state.energy;
+          if (typeof window.syncPetStatsFromBackend === 'function') {
+            window.syncPetStatsFromBackend(data.pet_state.affection, data.pet_state.energy);
+          } else {
+            petStatsEl.textContent = '好感度 ' + data.pet_state.affection + ' ｜ 活力 ' + data.pet_state.energy;
+          }
         }
 
         var metaParts = [];
@@ -632,7 +812,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
 
     var initialLog = loadLocalLog();
     if (initialLog.length === 0) {
-      renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天囉。', '', Date.now());
+      renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天或點「🎮 餵食與遊戲」陪我玩囉！', '', Date.now());
     } else {
       initialLog.forEach(function (item) {
         renderMessage(item.role, item.text, item.meta, item.time);
@@ -658,6 +838,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
     var ruleIntervalInputEl = document.getElementById('ruleIntervalInput');
     var ruleMsgInputEl = document.getElementById('ruleMsgInput');
     var proactiveBubbleEl = document.getElementById('proactiveBubble');
+    var proactiveBubbleIconEl = document.getElementById('proactiveBubbleIcon');
     var proactiveBubbleTitleEl = document.getElementById('proactiveBubbleTitle');
     var proactiveBubbleTextEl = document.getElementById('proactiveBubbleText');
     var activeBubbleRule = null;
@@ -806,6 +987,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
 
     function showProactiveNotification(rule) {
       activeBubbleRule = rule;
+      proactiveBubbleIconEl.textContent = rule.icon || '🐾';
       proactiveBubbleTitleEl.textContent = '🔔 ' + (rule.title || '主動關懷提醒');
       proactiveBubbleTextEl.textContent = rule.message || '';
       proactiveBubbleEl.classList.add('show');
@@ -975,6 +1157,358 @@ export const CHAT_HTML = `<!DOCTYPE html>
     setInterval(function () {
       checkDueProactiveRules(false);
     }, 30000);
+  </script>
+
+  <script id="scripts-care-game">
+    var CARE_STORAGE_KEY = 'pet_care_game_store_v1';
+    var careGameModalEl = document.getElementById('careGameModal');
+    var careStageAvatarEl = document.getElementById('careStageAvatar');
+    var careEnergyTextEl = document.getElementById('careEnergyText');
+    var careEnergyBarEl = document.getElementById('careEnergyBar');
+    var careAffectionTextEl = document.getElementById('careAffectionText');
+    var careAffectionBarEl = document.getElementById('careAffectionBar');
+    var careMoodTextEl = document.getElementById('careMoodText');
+    var careFeedbackBoxEl = document.getElementById('careFeedbackBox');
+    var gameRpsPanelEl = document.getElementById('gameRpsPanel');
+    var gameHeartsPanelEl = document.getElementById('gameHeartsPanel');
+    var tabRpsBtnEl = document.getElementById('tabRpsBtn');
+    var tabHeartsBtnEl = document.getElementById('tabHeartsBtn');
+    var rpsStatusTextEl = document.getElementById('rpsStatusText');
+    var heartArenaEl = document.getElementById('heartArena');
+    var heartTimerTextEl = document.getElementById('heartTimerText');
+    var heartScoreTextEl = document.getElementById('heartScoreText');
+    var startHeartGameBtnEl = document.getElementById('startHeartGameBtn');
+
+    var lastCareActionSummary = '';
+    var heartGameTimer = null;
+    var heartSpawnTimer = null;
+    var heartScore = 0;
+    var heartSecondsLeft = 10;
+
+    var SNACK_ITEMS = {
+      dried_fish: {
+        id: 'dried_fish',
+        name: '香烤小魚乾',
+        emoji: '🐟',
+        energyGain: 15,
+        affectionGain: 3,
+        reply: '咔滋咔滋！香噴噴的小魚乾太好吃了喵～活力補充完畢！🐟✨'
+      },
+      strawberry_cake: {
+        id: 'strawberry_cake',
+        name: '草莓鮮奶油蛋糕',
+        emoji: '🍰',
+        energyGain: 25,
+        affectionGain: 5,
+        reply: '哇～是酸甜的草莓蛋糕！謝謝主人，幸福感爆棚囉！🍰💖'
+      },
+      special_coffee: {
+        id: 'special_coffee',
+        name: '星光特調咖啡',
+        emoji: '☕',
+        energyGain: 35,
+        affectionGain: 4,
+        reply: '咕嚕咕嚕～特調咖啡香氣超迷人，現在精神百倍！☕⚡'
+      }
+    };
+
+    function clampVal(num) {
+      var n = parseInt(num, 10);
+      if (isNaN(n)) return 0;
+      return Math.max(0, Math.min(100, n));
+    }
+
+    function getMoodLabel(energy, affection) {
+      if (energy >= 80 && affection >= 80) return '元氣滿滿・超級撒嬌 🥰';
+      if (energy >= 70) return '活力充沛・心情愉快 😸';
+      if (energy >= 40) return '悠閒放鬆・期待互動 🐱';
+      if (energy >= 20) return '肚子微餓・想吃點心 🐾';
+      return '昏昏欲睡・急需補充能量 😪';
+    }
+
+    function loadCareLocalStore() {
+      try {
+        var raw = localStorage.getItem(CARE_STORAGE_KEY);
+        if (!raw) return { energy: 75, affection: 60, lastFedAt: 0 };
+        var parsed = JSON.parse(raw);
+        return {
+          energy: clampVal(parsed.energy !== undefined ? parsed.energy : 75),
+          affection: clampVal(parsed.affection !== undefined ? parsed.affection : 60),
+          lastFedAt: parsed.lastFedAt || 0
+        };
+      } catch (e) {
+        return { energy: 75, affection: 60, lastFedAt: 0 };
+      }
+    }
+
+    function saveCareLocalStore(st) {
+      localStorage.setItem(CARE_STORAGE_KEY, JSON.stringify(st));
+    }
+
+    function animateCareStage(emojiChar) {
+      if (emojiChar) {
+        careStageAvatarEl.textContent = emojiChar;
+        petEmojiEl.textContent = emojiChar;
+      }
+      careStageAvatarEl.classList.add('anim');
+      triggerAvatarBounce();
+      setTimeout(function () {
+        careStageAvatarEl.classList.remove('anim');
+      }, 300);
+    }
+
+    function updateCareUiDisplay() {
+      var st = loadCareLocalStore();
+      careEnergyTextEl.textContent = st.energy + ' / 100';
+      careEnergyBarEl.style.width = st.energy + '%';
+      careAffectionTextEl.textContent = st.affection + ' / 100';
+      careAffectionBarEl.style.width = st.affection + '%';
+      careMoodTextEl.textContent = '狀態：' + getMoodLabel(st.energy, st.affection);
+      petStatsEl.textContent = '好感度 ' + st.affection + ' ｜ 活力 ' + st.energy;
+    }
+
+    window.syncPetStatsFromBackend = function (affectionVal, energyVal) {
+      var st = loadCareLocalStore();
+      if (affectionVal !== undefined && affectionVal !== null) {
+        st.affection = clampVal(affectionVal);
+      }
+      if (energyVal !== undefined && energyVal !== null) {
+        st.energy = clampVal(energyVal);
+      }
+      saveCareLocalStore(st);
+      updateCareUiDisplay();
+    };
+
+    function showCareBubbleAndLog(icon, title, messageText, metaTag) {
+      proactiveBubbleIconEl.textContent = icon || '🍙';
+      proactiveBubbleTitleEl.textContent = title;
+      proactiveBubbleTextEl.textContent = messageText;
+      proactiveBubbleEl.classList.add('show');
+
+      var nowTs = Date.now();
+      var log = loadLocalLog();
+      log.push({ role: 'bot', text: messageText, meta: metaTag, time: nowTs });
+      saveLocalLog(log);
+      renderMessage('bot', messageText, metaTag, nowTs);
+    }
+
+    function handleFeedSnack(snackKey) {
+      markUserActivity();
+      var snack = SNACK_ITEMS[snackKey] || SNACK_ITEMS.dried_fish;
+      var st = loadCareLocalStore();
+      var nowMs = Date.now();
+
+      if (nowMs - st.lastFedAt < 4000) {
+        careFeedbackBoxEl.textContent = '🐾 桌寵正在嚼嚼嘴裡的點心，等幾秒鐘再餵下一口吧！';
+        animateCareStage('😸');
+        return;
+      }
+
+      var beforeEnergy = st.energy;
+      st.energy = clampVal(st.energy + snack.energyGain);
+      st.affection = clampVal(st.affection + snack.affectionGain);
+      st.lastFedAt = nowMs;
+      saveCareLocalStore(st);
+      updateCareUiDisplay();
+      animateCareStage('🥰');
+
+      var gainedE = st.energy - beforeEnergy;
+      var summaryText = snack.emoji + ' 餵食「' + snack.name + '」成功！活力 +' + gainedE + '（目前 ' + st.energy + '），好感度 +' + snack.affectionGain + '（目前 ' + st.affection + '）';
+      careFeedbackBoxEl.textContent = summaryText;
+      lastCareActionSummary = '我剛餵你吃了「' + snack.name + '」（請呼叫 manage_pet_care_game 工具：action 為 feed，snack_id 為 ' + snack.id + '，sync_energy 為 ' + st.energy + '，sync_affection 為 ' + st.affection + '）';
+
+      showCareBubbleAndLog(snack.emoji, '餵食點心 · ' + snack.name, snack.reply, '照護互動 · 活力 ' + st.energy);
+    }
+
+    function playRpsRound(playerMove) {
+      markUserActivity();
+      var moves = ['rock', 'scissors', 'paper'];
+      var moveNames = { rock: '✊ 石頭', scissors: '✌️ 剪刀', paper: '🖐️ 布' };
+      var botMove = moves[Math.floor(Math.random() * moves.length)];
+      var result = 'draw';
+
+      if (playerMove === botMove) {
+        result = 'draw';
+      } else if (
+        (playerMove === 'rock' && botMove === 'scissors') ||
+        (playerMove === 'scissors' && botMove === 'paper') ||
+        (playerMove === 'paper' && botMove === 'rock')
+      ) {
+        result = 'win';
+      } else {
+        result = 'lose';
+      }
+
+      var energyAdd = result === 'win' ? 18 : result === 'draw' ? 12 : 14;
+      var affectionAdd = result === 'win' ? 5 : 4;
+      var st = loadCareLocalStore();
+      var beforeE = st.energy;
+      st.energy = clampVal(st.energy + energyAdd);
+      st.affection = clampVal(st.affection + affectionAdd);
+      saveCareLocalStore(st);
+      updateCareUiDisplay();
+
+      var outcomeMsg = '';
+      if (result === 'win') {
+        animateCareStage('😸');
+        outcomeMsg = '你出 ' + moveNames[playerMove] + '，桌寵出 ' + moveNames[botMove] + '！🎉 你贏囉！桌寵開心地跳起來～';
+      } else if (result === 'draw') {
+        animateCareStage('🥰');
+        outcomeMsg = '雙方都出 ' + moveNames[playerMove] + '！✨ 超有默契平手！';
+      } else {
+        animateCareStage('😸');
+        outcomeMsg = '你出 ' + moveNames[playerMove] + '，桌寵出 ' + moveNames[botMove] + '！🐾 桌寵贏得這局，得意地搖尾巴！';
+      }
+
+      var deltaE = st.energy - beforeE;
+      rpsStatusTextEl.textContent = outcomeMsg + '（活力 +' + deltaE + ' / 好感 +' + affectionAdd + '）';
+      careFeedbackBoxEl.textContent = '🎲 猜拳對決完成！活力提升至 ' + st.energy + '，好感度提升至 ' + st.affection + '！';
+      lastCareActionSummary = '我們剛玩了猜拳大作戰，我出' + moveNames[playerMove] + '，結果為 ' + result + '（請呼叫 manage_pet_care_game 工具：action 為 play_game，game_type 為 rps，player_choice 為 ' + playerMove + '，game_result 為 ' + result + '，sync_energy 為 ' + st.energy + '，sync_affection 為 ' + st.affection + '）';
+
+      showCareBubbleAndLog('🎲', '猜拳大作戰', outcomeMsg, '小遊戲結算 · 活力 ' + st.energy);
+    }
+
+    function stopHeartGameTimers() {
+      if (heartGameTimer) { clearInterval(heartGameTimer); heartGameTimer = null; }
+      if (heartSpawnTimer) { clearInterval(heartSpawnTimer); heartSpawnTimer = null; }
+    }
+
+    function spawnCatchableHeart() {
+      var btn = document.createElement('button');
+      btn.className = 'heart-target';
+      var icons = ['💖', '💗', '💓', '⭐', '🍓'];
+      btn.textContent = icons[Math.floor(Math.random() * icons.length)];
+      var maxLeft = Math.max(40, heartArenaEl.clientWidth - 44);
+      var maxTop = Math.max(30, heartArenaEl.clientHeight - 44);
+      btn.style.left = Math.floor(Math.random() * maxLeft) + 'px';
+      btn.style.top = Math.floor(Math.random() * maxTop) + 'px';
+
+      btn.onclick = function (e) {
+        e.stopPropagation();
+        heartScore += 1;
+        heartScoreTextEl.textContent = '接到愛心：' + heartScore + ' 顆';
+        animateCareStage('🥰');
+        btn.remove();
+      };
+
+      heartArenaEl.appendChild(btn);
+      setTimeout(function () {
+        if (btn.parentNode) btn.remove();
+      }, 1400);
+    }
+
+    function finishHeartGame() {
+      stopHeartGameTimers();
+      heartArenaEl.innerHTML = '';
+      var replayBtn = document.createElement('button');
+      replayBtn.className = 'btn-primary';
+      replayBtn.textContent = '🔄 再玩一次接愛心挑戰';
+      replayBtn.onclick = startHeartGame;
+      heartArenaEl.appendChild(replayBtn);
+
+      var energyGain = Math.min(30, Math.max(8, heartScore * 2));
+      var affectionGain = Math.min(8, Math.max(2, Math.ceil((heartScore || 1) / 3)));
+      var st = loadCareLocalStore();
+      var beforeE = st.energy;
+      st.energy = clampVal(st.energy + energyGain);
+      st.affection = clampVal(st.affection + affectionGain);
+      saveCareLocalStore(st);
+      updateCareUiDisplay();
+      animateCareStage('😸');
+
+      var actualE = st.energy - beforeE;
+      var msg = '💖 10 秒挑戰結束！共接到 ' + heartScore + ' 顆愛心，桌寵活力 +' + actualE + '（目前 ' + st.energy + '）、好感度 +' + affectionGain + '！';
+      careFeedbackBoxEl.textContent = msg;
+      heartTimerTextEl.textContent = '挑戰完成！';
+      lastCareActionSummary = '我們剛玩了點擊接愛心挑戰，我接到了 ' + heartScore + ' 顆愛心（請呼叫 manage_pet_care_game 工具：action 為 play_game，game_type 為 catch_hearts，score 為 ' + heartScore + '，sync_energy 為 ' + st.energy + '，sync_affection 為 ' + st.affection + '）';
+
+      showCareBubbleAndLog('💖', '點擊接愛心結算', msg, '小遊戲結算 · 活力 ' + st.energy);
+    }
+
+    function startHeartGame() {
+      markUserActivity();
+      stopHeartGameTimers();
+      heartScore = 0;
+      heartSecondsLeft = 10;
+      heartArenaEl.innerHTML = '';
+      heartTimerTextEl.textContent = '剩餘時間：' + heartSecondsLeft + ' 秒';
+      heartScoreTextEl.textContent = '接到愛心：0 顆';
+      careFeedbackBoxEl.textContent = '⚡ 快點擊畫面中冒出的愛心與星星，幫桌寵收集滿滿能量！';
+
+      spawnCatchableHeart();
+      heartSpawnTimer = setInterval(spawnCatchableHeart, 450);
+      heartGameTimer = setInterval(function () {
+        heartSecondsLeft -= 1;
+        if (heartSecondsLeft <= 0) {
+          finishHeartGame();
+        } else {
+          heartTimerTextEl.textContent = '剩餘時間：' + heartSecondsLeft + ' 秒';
+        }
+      }, 1000);
+    }
+
+    document.getElementById('careGameBtn').onclick = function () {
+      updateCareUiDisplay();
+      careGameModalEl.classList.add('open');
+    };
+
+    document.getElementById('closeCareModalBtn').onclick = function () {
+      stopHeartGameTimers();
+      careGameModalEl.classList.remove('open');
+    };
+
+    document.getElementById('feedFishBtn').onclick = function () {
+      handleFeedSnack('dried_fish');
+    };
+    document.getElementById('feedCakeBtn').onclick = function () {
+      handleFeedSnack('strawberry_cake');
+    };
+    document.getElementById('feedCoffeeBtn').onclick = function () {
+      handleFeedSnack('special_coffee');
+    };
+
+    tabRpsBtnEl.onclick = function () {
+      stopHeartGameTimers();
+      tabRpsBtnEl.classList.add('active');
+      tabHeartsBtnEl.classList.remove('active');
+      gameRpsPanelEl.style.display = 'flex';
+      gameHeartsPanelEl.style.display = 'none';
+    };
+
+    tabHeartsBtnEl.onclick = function () {
+      tabHeartsBtnEl.classList.add('active');
+      tabRpsBtnEl.classList.remove('active');
+      gameRpsPanelEl.style.display = 'none';
+      gameHeartsPanelEl.style.display = 'flex';
+    };
+
+    document.getElementById('rpsRockBtn').onclick = function () {
+      playRpsRound('rock');
+    };
+    document.getElementById('rpsScissorsBtn').onclick = function () {
+      playRpsRound('scissors');
+    };
+    document.getElementById('rpsPaperBtn').onclick = function () {
+      playRpsRound('paper');
+    };
+
+    startHeartGameBtnEl.onclick = startHeartGame;
+
+    document.getElementById('shareCareChatBtn').onclick = function () {
+      stopHeartGameTimers();
+      careGameModalEl.classList.remove('open');
+      var cfg = getConfig();
+      if (!cfg.token) {
+        openSettings();
+        return;
+      }
+      var st = loadCareLocalStore();
+      var promptToSend = lastCareActionSummary || ('請使用 manage_pet_care_game 工具查詢並同步我的桌寵照護狀態，目前活力值為 ' + st.energy + '，好感度為 ' + st.affection + '，並跟我撒嬌互動一下吧！');
+      inputEl.value = promptToSend;
+      sendMessage();
+    };
+
+    updateCareUiDisplay();
   </script>
 </body>
 </html>`;
