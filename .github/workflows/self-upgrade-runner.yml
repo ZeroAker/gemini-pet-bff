@@ -1,0 +1,65 @@
+name: Self-Upgrade Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      user_id:
+        description: 'User ID'
+        required: true
+        type: string
+      instruction:
+        description: 'Upgrade instruction'
+        required: true
+        type: string
+      gcp_project_id:
+        description: 'GCP Project ID'
+        required: true
+        type: string
+      gcp_location:
+        description: 'GCP Location'
+        required: false
+        default: 'global'
+        type: string
+      model_upgrader:
+        description: 'Primary upgrader model'
+        required: false
+        default: 'gemini-4-neon'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run self-upgrade agent
+        env:
+          GOOGLE_CLOUD_API_KEY: ${{ secrets.GOOGLE_CLOUD_API_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          INPUT_USER_ID: ${{ inputs.user_id }}
+          INPUT_INSTRUCTION: ${{ inputs.instruction }}
+          INPUT_GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+          INPUT_GCP_LOCATION: ${{ inputs.gcp_location }}
+          INPUT_MODEL_UPGRADER: ${{ inputs.model_upgrader }}
+        run: node scripts/self-upgrade.mjs
