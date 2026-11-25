@@ -1,5 +1,7 @@
 export interface Env {
   GOOGLE_CLOUD_API_KEY: string;
+  GCP_PROJECT_ID?: string;
+  GCP_LOCATION?: string;
   GEMINI_MODEL?: string;
   UPSTASH_REDIS_REST_URL: string;
   UPSTASH_REDIS_REST_TOKEN: string;

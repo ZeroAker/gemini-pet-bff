@@ -1,5 +1,12 @@
 import type { ChatTurn, Env, PetState, PetStructuredReply } from './types';
 
+const FALLBACK_MODELS = [
+  'gemini-2.5-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+];
+
 // 1. Upstash Redis：管理短期對話快取、好感度狀態與跨裝置鎖
 export class StateService {
   constructor(private url: string, private token: string) {}
@@ -82,14 +89,57 @@ export class MemoryService {
   }
 }
 
-// 3. Google Cloud Vertex AI（原生 fetch + API Key 直連版）
+// 3. Google Cloud Vertex AI（global 端點 + 自動備援模型）
 export class GeminiService {
   private apiKey: string;
-  private model: string;
+  private projectId: string;
+  private location: string;
+  private candidateModels: string[];
 
   constructor(env: Env) {
     this.apiKey = (env.GOOGLE_CLOUD_API_KEY || '').trim();
-    this.model = (env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
+    this.projectId = (env.GCP_PROJECT_ID || '').trim();
+    this.location = (env.GCP_LOCATION || 'global').trim();
+
+    const primary = (env.GEMINI_MODEL || '').trim();
+    this.candidateModels = Array.from(
+      new Set([primary, ...FALLBACK_MODELS].filter(Boolean))
+    );
+  }
+
+  private buildEndpoint(model: string): string {
+    const keyParam = `key=${encodeURIComponent(this.apiKey)}`;
+    if (!this.projectId) {
+      return `https://aiplatform.googleapis.com/v1/publishers/google/models/${model}:generateContent?${keyParam}`;
+    }
+    const host =
+      this.location === 'global'
+        ? 'https://aiplatform.googleapis.com'
+        : `https://${this.location}-aiplatform.googleapis.com`;
+    return `${host}/v1/projects/${this.projectId}/locations/${this.location}/publishers/google/models/${model}:generateContent?${keyParam}`;
+  }
+
+  async probeModels(): Promise<Array<{ model: string; ok: boolean; status: number; detail?: string }>> {
+    if (!this.apiKey) {
+      throw new Error('找不到環境變數 GOOGLE_CLOUD_API_KEY');
+    }
+
+    return Promise.all(
+      this.candidateModels.map(async (model) => {
+        const res = await fetch(this.buildEndpoint(model), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+            generationConfig: { maxOutputTokens: 8 },
+          }),
+        });
+        if (res.ok) {
+          return { model, ok: true, status: res.status };
+        }
+        return { model, ok: false, status: res.status, detail: (await res.text()).slice(0, 180) };
+      })
+    );
   }
 
   async generateReply(params: {
@@ -121,35 +171,45 @@ export class GeminiService {
 
     const prompt = `${conversationLog ? `近期對話：\n${conversationLog}\n\n` : ''}主人：${params.userMessage}`;
 
-    const endpoint = `https://aiplatform.googleapis.com/v1/publishers/google/models/${this.model}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
+    const errors: string[] = [];
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0.7,
-        },
-      }),
-    });
+    for (const model of this.candidateModels) {
+      const res = await fetch(this.buildEndpoint(model), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.7,
+          },
+        }),
+      });
 
-    if (!res.ok) {
-      throw new Error(`Google Cloud 回應錯誤 (${res.status}): ${await res.text()}`);
+      if (res.ok) {
+        const data = (await res.json()) as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+        };
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+        const parsed = JSON.parse(rawText) as Partial<PetStructuredReply>;
+
+        return {
+          reply: parsed.reply || '喵？剛剛訊號好像閃了一下，再跟我說一次吧！',
+          emotion: parsed.emotion || 'idle',
+          affection_delta: typeof parsed.affection_delta === 'number' ? parsed.affection_delta : 1,
+        };
+      }
+
+      const errText = await res.text();
+      errors.push(`[${model} -> ${res.status}] ${errText.slice(0, 180)}`);
+
+      // 只有 404（模型不存在/未開放）才繼續嘗試下一個模型；權限或配額錯誤直接中斷
+      if (res.status !== 404) {
+        break;
+      }
     }
 
-    const data = (await res.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-    const parsed = JSON.parse(rawText) as Partial<PetStructuredReply>;
-
-    return {
-      reply: parsed.reply || '喵？剛剛訊號好像閃了一下，再跟我說一次吧！',
-      emotion: parsed.emotion || 'idle',
-      affection_delta: typeof parsed.affection_delta === 'number' ? parsed.affection_delta : 1,
-    };
+    throw new Error(`所有候選模型皆失敗：${errors.join(' | ')}`);
   }
 }

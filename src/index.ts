@@ -34,6 +34,20 @@ app.get('/test-gemini', async (c) => {
   }
 });
 
+app.get('/test-models', async (c) => {
+  try {
+    const geminiSvc = new GeminiService(c.env);
+    const results = await geminiSvc.probeModels();
+    return c.json({
+      location: c.env.GCP_LOCATION || 'global',
+      project: c.env.GCP_PROJECT_ID || '(auto)',
+      results,
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 app.post('/v1/pet/interact', async (c) => {
   const auth = c.req.header('Authorization');
   if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {

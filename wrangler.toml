@@ -2,3 +2,8 @@ name = "gemini-pet-bff"
 main = "src/index.ts"
 compatibility_date = "2025-11-01"
 compatibility_flags = ["nodejs_compat"]
+
+[vars]
+GCP_PROJECT_ID = "1031423259598"
+GCP_LOCATION = "global"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
