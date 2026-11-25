@@ -84,7 +84,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
     }
     .proactive-bubble-content { flex: 1; min-width: 0; }
     .proactive-bubble-title { font-size: 12px; font-weight: 600; color: #a29bfe; margin-bottom: 2px; }
-    .proactive-bubble-text { font-size: 13px; color: #e6e8f0; word-break: break-word; }
+    .proactive-bubble-text { font-size: 13px; color: #e6e8f0; word-break: break-word; white-space: pre-wrap; }
     .proactive-bubble-actions { display: flex; gap: 6px; flex-shrink: 0; }
     #chat {
       flex: 1;
@@ -722,6 +722,9 @@ export const CHAT_HTML = `<!DOCTYPE html>
         if (data.meta && data.meta.model_used) metaParts.push(data.meta.model_used);
         if (data.meta && data.meta.tools_used && data.meta.tools_used.length > 0) {
           metaParts.push('工具: ' + data.meta.tools_used.join(', '));
+          if (data.meta.tools_used.indexOf('request_self_upgrade') >= 0 && typeof window.onSelfUpgradeTriggered === 'function') {
+            window.onSelfUpgradeTriggered(text);
+          }
         }
         var metaStr = metaParts.join(' · ');
 
@@ -759,6 +762,10 @@ export const CHAT_HTML = `<!DOCTYPE html>
         });
         var st = await res.json();
         upgradeBar.style.display = 'block';
+
+        if (typeof window.syncUpgradeTrackingFromStatus === 'function') {
+          window.syncUpgradeTrackingFromStatus(st);
+        }
 
         if (st.status === 'idle') {
           upgradeTitle.textContent = 'ℹ️ 目前尚無自我升級紀錄';
@@ -863,6 +870,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
 
   <script id="scripts-proactive">
     var PROACTIVE_STORAGE_KEY = 'pet_proactive_store_v1';
+    var UPGRADE_TRACK_STORAGE_KEY = 'pet_upgrade_tracking_v1';
     var proactiveModalEl = document.getElementById('proactiveModal');
     var proactiveRuleListEl = document.getElementById('proactiveRuleList');
     var proactiveGlobalLabelEl = document.getElementById('proactiveGlobalLabel');
@@ -881,6 +889,8 @@ export const CHAT_HTML = `<!DOCTYPE html>
     var proactiveBubbleTextEl = document.getElementById('proactiveBubbleText');
     var activeBubbleRule = null;
     var isGeneratingProactiveAi = false;
+    var isCheckingUpgradeTrack = false;
+    var upgradeWatchTimer = null;
 
     function createDefaultProactiveStore() {
       var nowIso = new Date().toISOString();
@@ -938,6 +948,303 @@ export const CHAT_HTML = `<!DOCTYPE html>
       localStorage.setItem(PROACTIVE_STORAGE_KEY, JSON.stringify(store));
     }
 
+    function loadUpgradeTrack() {
+      try {
+        var raw = localStorage.getItem(UPGRADE_TRACK_STORAGE_KEY);
+        if (!raw) {
+          return { tracking: false, lastStatus: 'idle', actionsUrl: '', prUrl: '', summary: '', startedAt: 0, reportedKeys: [] };
+        }
+        var parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') {
+          return { tracking: false, lastStatus: 'idle', actionsUrl: '', prUrl: '', summary: '', startedAt: 0, reportedKeys: [] };
+        }
+        if (!Array.isArray(parsed.reportedKeys)) parsed.reportedKeys = [];
+        return parsed;
+      } catch (e) {
+        return { tracking: false, lastStatus: 'idle', actionsUrl: '', prUrl: '', summary: '', startedAt: 0, reportedKeys: [] };
+      }
+    }
+
+    function saveUpgradeTrack(track) {
+      if (Array.isArray(track.reportedKeys) && track.reportedKeys.length > 20) {
+        track.reportedKeys = track.reportedKeys.slice(-20);
+      }
+      localStorage.setItem(UPGRADE_TRACK_STORAGE_KEY, JSON.stringify(track));
+    }
+
+    function parseGitHubRunTarget(rawUrl) {
+      if (!rawUrl || typeof rawUrl !== 'string') return {};
+      try {
+        var u = new URL(rawUrl);
+        if (u.hostname !== 'github.com' && u.hostname !== 'www.github.com') return {};
+        var parts = u.pathname.split('/').filter(function (s) { return s.length > 0; });
+        if (parts.length < 2) return {};
+        var res = { repo: parts[0] + '/' + parts[1], runId: '' };
+        if (parts[2] === 'actions' && parts[3] === 'runs' && parts[4] && /^\d+$/.test(parts[4])) {
+          res.runId = parts[4];
+        }
+        return res;
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function ensureUpgradeWatchTimer() {
+      var track = loadUpgradeTrack();
+      if (track.tracking && !upgradeWatchTimer) {
+        upgradeWatchTimer = setInterval(function () {
+          checkTrackedUpgradeProgress(false);
+        }, 12000);
+      } else if (!track.tracking && upgradeWatchTimer) {
+        clearInterval(upgradeWatchTimer);
+        upgradeWatchTimer = null;
+      }
+    }
+
+    function buildUpgradeKey(runId, actionsUrl, startedAt, conclusion) {
+      var base = runId || actionsUrl || String(startedAt || 'latest');
+      return base + ':' + (conclusion || 'completed');
+    }
+
+    function emitUpgradeProactiveReport(opts) {
+      var track = loadUpgradeTrack();
+      var reportKey = buildUpgradeKey(opts.runId, opts.actionsUrl, track.startedAt, opts.conclusion);
+      if (track.reportedKeys.indexOf(reportKey) >= 0) {
+        track.tracking = false;
+        saveUpgradeTrack(track);
+        ensureUpgradeWatchTimer();
+        return false;
+      }
+
+      track.tracking = false;
+      track.lastStatus = 'completed';
+      track.reportedKeys.push(reportKey);
+      saveUpgradeTrack(track);
+      ensureUpgradeWatchTimer();
+
+      var nl = String.fromCharCode(10);
+      var isSuccess = Boolean(opts.isSuccess);
+      var titleText = isSuccess ? '🎉 自我升級完成通知' : '⚠️ 自我升級失敗通知';
+      var iconChar = isSuccess ? '🎉' : '⚠️';
+      var lines = [];
+
+      if (isSuccess) {
+        lines.push('主人好消息！自我升級任務' + (opts.summary ? '「' + opts.summary + '」' : '') + '已順利完成並部署上線囉！✨');
+        if (opts.prUrl) lines.push('PR 連結：' + opts.prUrl);
+        if (opts.actionsUrl) lines.push('Actions 日誌：' + opts.actionsUrl);
+      } else {
+        lines.push('主人注意：自我升級任務執行失敗（狀態：' + (opts.conclusion || 'failure') + '）。');
+        if (opts.failedSteps && opts.failedSteps.length > 0) {
+          lines.push('失敗步驟：' + opts.failedSteps.join('；'));
+        }
+        if (opts.reason) {
+          lines.push('失敗原因：' + opts.reason);
+        }
+        if (opts.actionsUrl) {
+          lines.push('查看詳細日誌：' + opts.actionsUrl);
+        }
+      }
+
+      var fullMsg = lines.join(nl);
+      activeBubbleRule = { title: titleText, message: fullMsg };
+      proactiveBubbleIconEl.textContent = iconChar;
+      proactiveBubbleTitleEl.textContent = titleText;
+      proactiveBubbleTextEl.textContent = fullMsg;
+      proactiveBubbleEl.classList.add('show');
+      petEmojiEl.textContent = isSuccess ? EMOJI_MAP.happy : EMOJI_MAP.caring;
+      triggerAvatarBounce();
+
+      var nowTs = Date.now();
+      var metaLabel = '主動回報 · 自我升級' + (isSuccess ? '成功' : '失敗');
+      var log = loadLocalLog();
+      log.push({ role: 'bot', text: fullMsg, meta: metaLabel, time: nowTs });
+      saveLocalLog(log);
+      renderMessage('bot', fullMsg, metaLabel, nowTs);
+      return true;
+    }
+
+    async function fetchGitHubRunSummary(actionsUrl) {
+      var parsed = parseGitHubRunTarget(actionsUrl);
+      if (!parsed.repo) return null;
+      try {
+        var ghHeaders = { 'Accept': 'application/vnd.github+json' };
+        var targetRun = null;
+        if (parsed.runId) {
+          var rRes = await fetch('https://api.github.com/repos/' + parsed.repo + '/actions/runs/' + parsed.runId, { headers: ghHeaders });
+          if (rRes.ok) targetRun = await rRes.json();
+        } else {
+          var listRes = await fetch('https://api.github.com/repos/' + parsed.repo + '/actions/workflows/self-upgrade-runner.yml/runs?per_page=3', { headers: ghHeaders });
+          if (listRes.ok) {
+            var listData = await listRes.json();
+            if (listData && Array.isArray(listData.workflow_runs) && listData.workflow_runs.length > 0) {
+              targetRun = listData.workflow_runs[0];
+            }
+          }
+        }
+        if (!targetRun) return null;
+        var failedSteps = [];
+        if (targetRun.status === 'completed' && targetRun.conclusion !== 'success' && targetRun.id) {
+          try {
+            var jRes = await fetch('https://api.github.com/repos/' + parsed.repo + '/actions/runs/' + targetRun.id + '/jobs?per_page=10', { headers: ghHeaders });
+            if (jRes.ok) {
+              var jData = await jRes.json();
+              var jobs = Array.isArray(jData.jobs) ? jData.jobs : [];
+              jobs.forEach(function (job) {
+                var steps = Array.isArray(job.steps) ? job.steps : [];
+                steps.forEach(function (s) {
+                  if (s.conclusion === 'failure' || s.conclusion === 'cancelled' || s.conclusion === 'timed_out') {
+                    failedSteps.push((job.name || 'Job') + ' > ' + (s.name || '步驟'));
+                  }
+                });
+              });
+            }
+          } catch (e) {
+            // 忽略 jobs 額外查詢失敗
+          }
+        }
+        return {
+          id: targetRun.id ? String(targetRun.id) : parsed.runId,
+          status: targetRun.status || '',
+          conclusion: targetRun.conclusion || '',
+          htmlUrl: targetRun.html_url || actionsUrl,
+          displayTitle: targetRun.display_title || targetRun.name || '',
+          updatedAt: targetRun.updated_at || targetRun.created_at || '',
+          failedSteps: failedSteps
+        };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    window.onSelfUpgradeTriggered = function (promptText) {
+      var track = loadUpgradeTrack();
+      track.tracking = true;
+      track.lastStatus = 'running';
+      track.actionsUrl = '';
+      track.prUrl = '';
+      track.summary = (promptText || '').trim().slice(0, 40);
+      track.startedAt = Date.now();
+      saveUpgradeTrack(track);
+      ensureUpgradeWatchTimer();
+      setTimeout(function () {
+        checkTrackedUpgradeProgress(true);
+      }, 4500);
+    };
+
+    window.syncUpgradeTrackingFromStatus = function (st) {
+      if (!st || typeof st !== 'object' || st.status === 'idle') return;
+      var track = loadUpgradeTrack();
+      if (st.actions_url) track.actionsUrl = st.actions_url;
+      if (st.pr_url) track.prUrl = st.pr_url;
+      if (st.status === 'running' || st.status === 'pr_created') {
+        var parsed = parseGitHubRunTarget(track.actionsUrl);
+        var doneKey1 = buildUpgradeKey(parsed.runId, track.actionsUrl, track.startedAt, 'success');
+        var doneKey2 = buildUpgradeKey(parsed.runId, track.actionsUrl, track.startedAt, 'failure');
+        if (track.reportedKeys.indexOf(doneKey1) < 0 && track.reportedKeys.indexOf(doneKey2) < 0) {
+          track.tracking = true;
+          track.lastStatus = st.status;
+          if (!track.startedAt) track.startedAt = Date.now();
+        }
+      }
+      saveUpgradeTrack(track);
+      ensureUpgradeWatchTimer();
+    };
+
+    async function checkTrackedUpgradeProgress(forceCheck) {
+      var cfg = getConfig();
+      if (!cfg.token || isCheckingUpgradeTrack) return false;
+      var track = loadUpgradeTrack();
+      if (!track.tracking && !forceCheck) {
+        return false;
+      }
+      isCheckingUpgradeTrack = true;
+      try {
+        var res = await fetch('/v1/pet/upgrade/status?uid=' + encodeURIComponent(cfg.uid), {
+          headers: { 'Authorization': 'Bearer ' + cfg.token }
+        });
+        if (!res.ok) return false;
+        var st = await res.json();
+        if (!st || st.status === 'idle') return false;
+
+        track = loadUpgradeTrack();
+        if (st.actions_url) track.actionsUrl = st.actions_url;
+        if (st.pr_url) track.prUrl = st.pr_url;
+
+        if (st.status === 'running' || st.status === 'pr_created') {
+          var activeParsed = parseGitHubRunTarget(track.actionsUrl);
+          var keyOk = buildUpgradeKey(activeParsed.runId, track.actionsUrl, track.startedAt, 'success');
+          var keyFail = buildUpgradeKey(activeParsed.runId, track.actionsUrl, track.startedAt, 'failure');
+          if (track.reportedKeys.indexOf(keyOk) < 0 && track.reportedKeys.indexOf(keyFail) < 0) {
+            track.tracking = true;
+            track.lastStatus = st.status;
+            if (!track.startedAt) track.startedAt = Date.now();
+            saveUpgradeTrack(track);
+            ensureUpgradeWatchTimer();
+          }
+        }
+
+        if (!track.tracking) return false;
+
+        var ghInfo = track.actionsUrl ? await fetchGitHubRunSummary(track.actionsUrl) : null;
+        if (ghInfo) {
+          if (ghInfo.status !== 'completed') {
+            track.lastStatus = ghInfo.status || 'in_progress';
+            saveUpgradeTrack(track);
+            return false;
+          }
+          var ghIsSuccess = ghInfo.conclusion === 'success';
+          var ghReason = '';
+          if (!ghIsSuccess) {
+            if (st.error) ghReason = st.error;
+            else if (Array.isArray(st.logs) && st.logs.length > 0) ghReason = st.logs[st.logs.length - 1];
+          }
+          return emitUpgradeProactiveReport({
+            isSuccess: ghIsSuccess,
+            runId: ghInfo.id,
+            conclusion: ghInfo.conclusion || (ghIsSuccess ? 'success' : 'failure'),
+            actionsUrl: ghInfo.htmlUrl || track.actionsUrl,
+            prUrl: track.prUrl,
+            summary: track.summary || ghInfo.displayTitle,
+            failedSteps: ghInfo.failedSteps,
+            reason: ghReason
+          });
+        }
+
+        if (st.status === 'merged') {
+          return emitUpgradeProactiveReport({
+            isSuccess: true,
+            runId: parseGitHubRunTarget(track.actionsUrl).runId || '',
+            conclusion: 'success',
+            actionsUrl: track.actionsUrl,
+            prUrl: track.prUrl,
+            summary: track.summary,
+            failedSteps: [],
+            reason: ''
+          });
+        }
+
+        if (st.is_stale || (st.status !== 'running' && st.status !== 'pr_created')) {
+          var failReason = st.error || (st.is_stale ? '升級任務超過 20 分鐘無心跳更新' : (Array.isArray(st.logs) && st.logs.length > 0 ? st.logs[st.logs.length - 1] : '狀態異常終止'));
+          return emitUpgradeProactiveReport({
+            isSuccess: false,
+            runId: parseGitHubRunTarget(track.actionsUrl).runId || '',
+            conclusion: st.status || 'failure',
+            actionsUrl: track.actionsUrl,
+            prUrl: track.prUrl,
+            summary: track.summary,
+            failedSteps: [],
+            reason: failReason
+          });
+        }
+
+        return false;
+      } catch (e) {
+        return false;
+      } finally {
+        isCheckingUpgradeTrack = false;
+      }
+    }
+
     function formatScheduleBadge(rule) {
       if (rule.scheduleType === 'daily') return '每日 ' + (rule.time || '09:00');
       if (rule.scheduleType === 'interval') return '每 ' + (rule.intervalMinutes || 60) + ' 分鐘';
@@ -948,7 +1255,9 @@ export const CHAT_HTML = `<!DOCTYPE html>
       var store = loadProactiveStore();
       proactiveGlobalLabelEl.textContent = '主動關懷總開關：' + (store.globalEnabled ? '🟢 啟用中' : '⚪ 已停用');
       var idleMin = Math.floor((Date.now() - lastUserActivityAt) / 60000);
-      proactiveIdleInfoEl.textContent = '目前閒置約 ' + idleMin + ' 分鐘 ｜ 共 ' + store.rules.length + ' 筆排程';
+      var track = loadUpgradeTrack();
+      var trackLabel = track.tracking ? ' ｜ 🔄 自我升級追蹤中' : '';
+      proactiveIdleInfoEl.textContent = '目前閒置約 ' + idleMin + ' 分鐘 ｜ 共 ' + store.rules.length + ' 筆排程' + trackLabel;
       proactiveRuleListEl.innerHTML = '';
 
       if (store.rules.length === 0) {
@@ -1117,6 +1426,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
     }
 
     function checkDueProactiveRules(forceTriggerFirst) {
+      checkTrackedUpgradeProgress(Boolean(forceTriggerFirst));
       if (isGeneratingProactiveAi && !forceTriggerFirst) return false;
       var store = loadProactiveStore();
       if (!store.globalEnabled) return false;
@@ -1273,6 +1583,10 @@ export const CHAT_HTML = `<!DOCTYPE html>
     };
 
     window.addEventListener('pointerdown', markUserActivity);
+    ensureUpgradeWatchTimer();
+    setTimeout(function () {
+      checkTrackedUpgradeProgress(true);
+    }, 2500);
     setInterval(function () {
       checkDueProactiveRules(false);
     }, 30000);

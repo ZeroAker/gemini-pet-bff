@@ -1,4 +1,5 @@
 import type { PluginTool } from '../types';
+import { githubActionsUpgradeStatusPlugin } from './github-actions-upgrade-status';
 
 export type ScheduleType = 'daily' | 'interval' | 'idle';
 
@@ -15,6 +16,23 @@ export interface ProactiveRule {
   lastTriggeredAt: string | null;
 }
 
+export interface UpgradeTrackingState {
+  tracking: boolean;
+  repo: string;
+  workflowFile: string;
+  runId: string;
+  actionsUrl: string;
+  prUrl: string;
+  summary: string;
+  lastKnownStatus: string;
+  lastKnownConclusion: string | null;
+  reported: boolean;
+  reportedRunKeys: string[];
+  startedAt: string | null;
+  lastCheckedAt: string | null;
+  reportedAt: string | null;
+}
+
 export interface ProactiveUserStore {
   userId: string;
   globalEnabled: boolean;
@@ -22,6 +40,7 @@ export interface ProactiveUserStore {
   lastInteractionAt: string;
   updatedAt: string;
   rules: ProactiveRule[];
+  upgradeTracking: UpgradeTrackingState;
 }
 
 interface KvNamespaceLike {
@@ -48,9 +67,33 @@ interface GeminiGenerateContentResponse {
   candidates?: GeminiCandidate[];
 }
 
+interface ParsedGitHubTarget {
+  repo?: string;
+  runId?: string;
+  workflowFile?: string;
+}
+
+interface DueNotificationItem extends ProactiveRule {
+  originalMessage?: string;
+  aiGeneratedSuccess?: boolean;
+  upgradeReport?: {
+    runId: string;
+    status: string;
+    conclusion: string;
+    actionsUrl: string;
+    prUrl: string;
+    failedSteps: string[];
+    errorReasons: string[];
+  };
+}
+
 const MEMORY_STORE = new Map<string, ProactiveUserStore>();
 const DEFAULT_TIMEZONE = 'Asia/Taipei';
+const DEFAULT_WORKFLOW_FILE = 'self-upgrade-runner.yml';
 const TIME_PATTERN = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const RUN_ID_PATTERN = /^\d+$/;
+const WORKFLOW_PATTERN = /^[A-Za-z0-9_.-]+$/;
 
 function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -101,6 +144,31 @@ function normalizeScheduleType(
   return 'daily';
 }
 
+function parseGitHubActionsUrl(rawUrl: string): ParsedGitHubTarget {
+  if (!rawUrl) return {};
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') {
+      return {};
+    }
+    const parts = parsed.pathname.split('/').filter((segment) => segment.length > 0);
+    const owner = parts[0];
+    const repoName = parts[1];
+    if (!owner || !repoName) return {};
+    const candidateRepo = `${owner}/${repoName}`;
+    if (!REPO_PATTERN.test(candidateRepo)) return {};
+    const result: ParsedGitHubTarget = { repo: candidateRepo };
+    if (parts[2] === 'actions' && parts[3] === 'runs' && parts[4] && RUN_ID_PATTERN.test(parts[4])) {
+      result.runId = parts[4];
+    } else if (parts[2] === 'actions' && parts[3] === 'workflows' && parts[4] && WORKFLOW_PATTERN.test(parts[4])) {
+      result.workflowFile = parts[4];
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 function isKvLike(candidate: unknown): candidate is KvNamespaceLike {
   if (!candidate || typeof candidate !== 'object') return false;
   const rec = candidate as Record<string, unknown>;
@@ -122,41 +190,49 @@ function extractKvFromContext(ctx: { userId: string }): KvNamespaceLike | null {
   return null;
 }
 
+function extractEnvString(ctx: { userId: string }, keys: string[]): string {
+  const raw = ctx as unknown as Record<string, unknown>;
+  for (const key of keys) {
+    const direct = asTrimmedString(raw[key]);
+    if (direct) return direct;
+  }
+  if (raw.env && typeof raw.env === 'object') {
+    const envRec = raw.env as Record<string, unknown>;
+    for (const key of keys) {
+      const envVal = asTrimmedString(envRec[key]);
+      if (envVal) return envVal;
+    }
+  }
+  const g = globalThis as unknown as Record<string, unknown>;
+  for (const key of keys) {
+    const gVal = asTrimmedString(g[key]);
+    if (gVal) return gVal;
+  }
+  return '';
+}
+
 function extractGeminiApiKey(ctx: { userId: string }, args: Record<string, unknown>): string {
   const fromArgs = asTrimmedString(args.gemini_api_key ?? args.api_key);
   if (fromArgs) return fromArgs;
+  return extractEnvString(ctx, [
+    'geminiApiKey',
+    'apiKey',
+    'GEMINI_API_KEY',
+    'GOOGLE_API_KEY',
+    'GEMINI_KEY',
+    'API_KEY',
+  ]);
+}
 
-  const raw = ctx as unknown as Record<string, unknown>;
-  const directKeys = [
-    raw.geminiApiKey,
-    raw.apiKey,
-    raw.GEMINI_API_KEY,
-    raw.GOOGLE_API_KEY,
-  ];
-  for (const candidate of directKeys) {
-    const key = asTrimmedString(candidate);
-    if (key) return key;
-  }
+function extractGitHubToken(ctx: { userId: string }, args: Record<string, unknown>): string {
+  const fromArgs = asTrimmedString(args.github_token);
+  if (fromArgs) return fromArgs;
+  return extractEnvString(ctx, ['GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_PAT']);
+}
 
-  if (raw.env && typeof raw.env === 'object') {
-    const envRec = raw.env as Record<string, unknown>;
-    const envKeys = [
-      envRec.GEMINI_API_KEY,
-      envRec.GOOGLE_API_KEY,
-      envRec.GEMINI_KEY,
-      envRec.API_KEY,
-    ];
-    for (const candidate of envKeys) {
-      const key = asTrimmedString(candidate);
-      if (key) return key;
-    }
-  }
-
-  const g = globalThis as unknown as Record<string, unknown>;
-  const globalKey = asTrimmedString(g.GEMINI_API_KEY ?? g.GOOGLE_API_KEY);
-  if (globalKey) return globalKey;
-
-  return '';
+function extractDefaultRepo(ctx: { userId: string }): string {
+  const candidate = extractEnvString(ctx, ['GITHUB_REPOSITORY', 'GITHUB_REPO', 'UPGRADE_REPO']);
+  return REPO_PATTERN.test(candidate) ? candidate : '';
 }
 
 async function generateAiCareSentence(
@@ -245,6 +321,53 @@ function buildCacheUrl(userId: string): string {
   return `https://proactive-store.internal/v1/${encodeURIComponent(userId || 'default')}`;
 }
 
+function createDefaultUpgradeTracking(): UpgradeTrackingState {
+  return {
+    tracking: false,
+    repo: '',
+    workflowFile: DEFAULT_WORKFLOW_FILE,
+    runId: '',
+    actionsUrl: '',
+    prUrl: '',
+    summary: '',
+    lastKnownStatus: 'idle',
+    lastKnownConclusion: null,
+    reported: false,
+    reportedRunKeys: [],
+    startedAt: null,
+    lastCheckedAt: null,
+    reportedAt: null,
+  };
+}
+
+function sanitizeUpgradeTracking(raw: unknown): UpgradeTrackingState {
+  const fallback = createDefaultUpgradeTracking();
+  if (!raw || typeof raw !== 'object') return fallback;
+  const obj = raw as Record<string, unknown>;
+  const rawKeys = Array.isArray(obj.reportedRunKeys) ? obj.reportedRunKeys : [];
+  const reportedRunKeys: string[] = [];
+  for (const k of rawKeys.slice(-20)) {
+    const str = asTrimmedString(k);
+    if (str) reportedRunKeys.push(str);
+  }
+  return {
+    tracking: asBoolean(obj.tracking, false),
+    repo: asTrimmedString(obj.repo),
+    workflowFile: asTrimmedString(obj.workflowFile) || DEFAULT_WORKFLOW_FILE,
+    runId: asTrimmedString(obj.runId),
+    actionsUrl: asTrimmedString(obj.actionsUrl),
+    prUrl: asTrimmedString(obj.prUrl),
+    summary: asTrimmedString(obj.summary),
+    lastKnownStatus: asTrimmedString(obj.lastKnownStatus) || 'idle',
+    lastKnownConclusion: asTrimmedString(obj.lastKnownConclusion) || null,
+    reported: asBoolean(obj.reported, false),
+    reportedRunKeys,
+    startedAt: asTrimmedString(obj.startedAt) || null,
+    lastCheckedAt: asTrimmedString(obj.lastCheckedAt) || null,
+    reportedAt: asTrimmedString(obj.reportedAt) || null,
+  };
+}
+
 function createDefaultRules(nowIso: string): ProactiveRule[] {
   return [
     {
@@ -283,6 +406,7 @@ function createInitialStore(userId: string): ProactiveUserStore {
     lastInteractionAt: nowIso,
     updatedAt: nowIso,
     rules: createDefaultRules(nowIso),
+    upgradeTracking: createDefaultUpgradeTracking(),
   };
 }
 
@@ -329,6 +453,7 @@ function sanitizeStore(raw: unknown, userId: string): ProactiveUserStore {
     lastInteractionAt: asTrimmedString(obj.lastInteractionAt) || nowIso,
     updatedAt: asTrimmedString(obj.updatedAt) || nowIso,
     rules,
+    upgradeTracking: sanitizeUpgradeTracking(obj.upgradeTracking),
   };
 }
 
@@ -375,6 +500,7 @@ async function loadUserStore(userId: string, ctx: { userId: string }): Promise<P
 
 async function saveUserStore(store: ProactiveUserStore, ctx: { userId: string }): Promise<void> {
   store.updatedAt = new Date().toISOString();
+  store.upgradeTracking.reportedRunKeys = store.upgradeTracking.reportedRunKeys.slice(-20);
   MEMORY_STORE.set(store.userId, store);
   const serialized = JSON.stringify(store);
 
@@ -456,17 +582,287 @@ function parseTimeToMinutes(timeStr: string): number {
   return Number(hh ?? 9) * 60 + Number(mm ?? 0);
 }
 
+function isInProgressStatus(status: string): boolean {
+  const lower = status.trim().toLowerCase();
+  return (
+    lower === 'running' ||
+    lower === 'in_progress' ||
+    lower === 'queued' ||
+    lower === 'waiting' ||
+    lower === 'pending' ||
+    lower === 'requested' ||
+    lower === 'pr_created'
+  );
+}
+
+function registerUpgradeTracking(
+  store: ProactiveUserStore,
+  args: Record<string, unknown>,
+  ctx: { userId: string },
+  nowIso: string
+): { registered: boolean; alreadyReported: boolean } {
+  const rawActionsUrl = asTrimmedString(args.actions_url);
+  const parsedUrl = parseGitHubActionsUrl(rawActionsUrl);
+  const repoArg = asTrimmedString(args.repo);
+  const resolvedRepo = repoArg || parsedUrl.repo || store.upgradeTracking.repo || extractDefaultRepo(ctx);
+  const resolvedWorkflow =
+    asTrimmedString(args.workflow_file) ||
+    parsedUrl.workflowFile ||
+    store.upgradeTracking.workflowFile ||
+    DEFAULT_WORKFLOW_FILE;
+  const resolvedRunId = asTrimmedString(args.run_id) || parsedUrl.runId || '';
+  const resolvedPrUrl = asTrimmedString(args.pr_url) || store.upgradeTracking.prUrl;
+  const resolvedSummary = asTrimmedString(args.upgrade_summary ?? args.summary ?? args.title) || store.upgradeTracking.summary;
+  const resolvedStatus = asTrimmedString(args.upgrade_status ?? args.status) || 'running';
+
+  if (resolvedRunId) {
+    const alreadyDone = store.upgradeTracking.reportedRunKeys.some((k) => k.startsWith(`${resolvedRunId}:`));
+    if (alreadyDone) {
+      return { registered: false, alreadyReported: true };
+    }
+  }
+
+  const isNewRun = resolvedRunId !== '' && resolvedRunId !== store.upgradeTracking.runId;
+  store.upgradeTracking.tracking = true;
+  store.upgradeTracking.reported = false;
+  store.upgradeTracking.repo = resolvedRepo;
+  store.upgradeTracking.workflowFile = resolvedWorkflow;
+  if (resolvedRunId) {
+    store.upgradeTracking.runId = resolvedRunId;
+  } else if (isNewRun) {
+    store.upgradeTracking.runId = '';
+  }
+  if (rawActionsUrl) {
+    store.upgradeTracking.actionsUrl = rawActionsUrl;
+  }
+  if (resolvedPrUrl) {
+    store.upgradeTracking.prUrl = resolvedPrUrl;
+  }
+  if (resolvedSummary) {
+    store.upgradeTracking.summary = resolvedSummary;
+  }
+  store.upgradeTracking.lastKnownStatus = isInProgressStatus(resolvedStatus) ? resolvedStatus : 'running';
+  store.upgradeTracking.lastKnownConclusion = null;
+  store.upgradeTracking.startedAt = nowIso;
+  store.upgradeTracking.reportedAt = null;
+
+  return { registered: true, alreadyReported: false };
+}
+
+function extractUpgradeFailureDetails(jobsRaw: unknown): { failedSteps: string[]; errorReasons: string[] } {
+  const failedSteps: string[] = [];
+  const errorReasons: string[] = [];
+  const jobs = Array.isArray(jobsRaw) ? jobsRaw : [];
+
+  for (const jobItem of jobs) {
+    if (!jobItem || typeof jobItem !== 'object') continue;
+    const job = jobItem as Record<string, unknown>;
+    const jobName = asTrimmedString(job.name) || 'Job';
+
+    const steps = Array.isArray(job.failed_steps) ? job.failed_steps : [];
+    for (const stItem of steps) {
+      if (!stItem || typeof stItem !== 'object') continue;
+      const st = stItem as Record<string, unknown>;
+      const stName = asTrimmedString(st.name) || '步驟';
+      const stConcl = asTrimmedString(st.conclusion) || 'failure';
+      failedSteps.push(`${jobName} > ${stName} (${stConcl})`);
+    }
+
+    const annotations = Array.isArray(job.annotations) ? job.annotations : [];
+    for (const annItem of annotations.slice(0, 5)) {
+      if (!annItem || typeof annItem !== 'object') continue;
+      const ann = annItem as Record<string, unknown>;
+      const msg = asTrimmedString(ann.message);
+      if (!msg) continue;
+      const filePath = asTrimmedString(ann.path);
+      const lineNum = typeof ann.start_line === 'number' ? `:${ann.start_line}` : '';
+      const formatted = filePath ? `${filePath}${lineNum} - ${msg}` : msg;
+      if (!errorReasons.includes(formatted)) {
+        errorReasons.push(formatted);
+      }
+    }
+
+    const errorLines = Array.isArray(job.error_lines) ? job.error_lines : [];
+    for (const line of errorLines.slice(0, 5)) {
+      const trimmed = asTrimmedString(line);
+      if (trimmed && !errorReasons.includes(trimmed)) {
+        errorReasons.push(trimmed);
+      }
+    }
+
+    if (errorReasons.length === 0) {
+      const logTail = asTrimmedString(job.log_tail);
+      if (logTail) {
+        const tailLines = logTail.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+        for (const tl of tailLines.slice(-3)) {
+          if (!errorReasons.includes(tl)) {
+            errorReasons.push(tl);
+          }
+        }
+      } else {
+        const note = asTrimmedString(job.log_access_note);
+        if (note && !errorReasons.includes(note)) {
+          errorReasons.push(note);
+        }
+      }
+    }
+  }
+
+  return {
+    failedSteps: failedSteps.slice(0, 8),
+    errorReasons: errorReasons.slice(0, 6),
+  };
+}
+
+async function checkTrackedUpgradeProgress(
+  store: ProactiveUserStore,
+  args: Record<string, unknown>,
+  ctx: { userId: string },
+  nowIso: string,
+  nowMs: number
+): Promise<{ notification: DueNotificationItem | null; changed: boolean }> {
+  const track = store.upgradeTracking;
+  if (!track.tracking || track.reported) {
+    return { notification: null, changed: false };
+  }
+
+  const repo = track.repo || asTrimmedString(args.repo) || parseGitHubActionsUrl(track.actionsUrl).repo || extractDefaultRepo(ctx);
+  if (!repo) {
+    return { notification: null, changed: false };
+  }
+
+  const githubToken = extractGitHubToken(ctx, args);
+  const ghArgs: Record<string, unknown> = {
+    repo,
+    workflow_file: track.workflowFile || DEFAULT_WORKFLOW_FILE,
+  };
+  if (track.actionsUrl) ghArgs.actions_url = track.actionsUrl;
+  if (track.runId) ghArgs.run_id = track.runId;
+  if (githubToken) ghArgs.github_token = githubToken;
+
+  const ghRes = await githubActionsUpgradeStatusPlugin.execute(ghArgs, ctx);
+  track.lastCheckedAt = nowIso;
+
+  if (!ghRes || ghRes.ok !== true || !ghRes.run || typeof ghRes.run !== 'object') {
+    return { notification: null, changed: true };
+  }
+
+  const run = ghRes.run as Record<string, unknown>;
+  const runId = String(run.id ?? '');
+  const runStatus = asTrimmedString(run.status).toLowerCase() || 'unknown';
+  const runConclusion = asTrimmedString(run.conclusion).toLowerCase() || '';
+  const runHtmlUrl = asTrimmedString(run.html_url) || track.actionsUrl;
+  const runNumber = typeof run.run_number === 'number' ? `#${run.run_number}` : `#${runId}`;
+  const displayTitle = asTrimmedString(run.display_title) || asTrimmedString(run.name) || '自我升級任務';
+
+  if (!track.runId && track.startedAt && runStatus === 'completed') {
+    const startedMs = Date.parse(track.startedAt);
+    const runTimeMs = Date.parse(asTrimmedString(run.updated_at) || asTrimmedString(run.created_at));
+    if (Number.isFinite(startedMs) && Number.isFinite(runTimeMs) && runTimeMs < startedMs - 120000) {
+      return { notification: null, changed: true };
+    }
+  }
+
+  if (runId) track.runId = runId;
+  if (runHtmlUrl) track.actionsUrl = runHtmlUrl;
+
+  const wasInProgress = isInProgressStatus(track.lastKnownStatus);
+  if (runStatus !== 'completed') {
+    track.lastKnownStatus = runStatus || 'in_progress';
+    track.lastKnownConclusion = runConclusion || null;
+    return { notification: null, changed: true };
+  }
+
+  const reportKey = `${runId}:${runConclusion || 'completed'}`;
+  if (track.reportedRunKeys.includes(reportKey)) {
+    track.tracking = false;
+    track.reported = true;
+    return { notification: null, changed: true };
+  }
+
+  if (!wasInProgress && !track.startedAt) {
+    return { notification: null, changed: true };
+  }
+
+  const isSuccess = runConclusion === 'success';
+  const { failedSteps, errorReasons } = isSuccess
+    ? { failedSteps: [], errorReasons: [] }
+    : extractUpgradeFailureDetails(ghRes.jobs);
+
+  const summaryLabel = track.summary || displayTitle;
+  let title = '';
+  let message = '';
+
+  if (isSuccess) {
+    title = '🎉 自我升級完成通知';
+    const parts: string[] = [
+      `主人好消息！我的自我升級「${summaryLabel}」（GitHub Actions ${runNumber}）已經順利完成囉！✨`,
+    ];
+    if (track.prUrl) parts.push(`PR 變更連結：${track.prUrl}`);
+    if (runHtmlUrl) parts.push(`Actions 執行紀錄：${runHtmlUrl}`);
+    message = parts.join('\n');
+  } else {
+    title = '⚠️ 自我升級失敗通知';
+    const parts: string[] = [
+      `主人注意：我的自我升級「${summaryLabel}」（GitHub Actions ${runNumber}）執行失敗（狀態：${runConclusion || 'failure'}）。`,
+    ];
+    if (failedSteps.length > 0) {
+      parts.push(`失敗步驟：${failedSteps.join('；')}`);
+    }
+    if (errorReasons.length > 0) {
+      parts.push(`失敗原因摘要：${errorReasons.slice(0, 3).join(' | ')}`);
+    }
+    if (runHtmlUrl) {
+      parts.push(`詳細錯誤日誌：${runHtmlUrl}`);
+    }
+    message = parts.join('\n');
+  }
+
+  track.tracking = false;
+  track.reported = true;
+  track.lastKnownStatus = 'completed';
+  track.lastKnownConclusion = runConclusion || (isSuccess ? 'success' : 'failure');
+  track.reportedAt = nowIso;
+  track.reportedRunKeys.push(reportKey);
+
+  const notification: DueNotificationItem = {
+    id: `upgrade-${runId || nowMs}`,
+    title,
+    message,
+    scheduleType: 'interval',
+    time: '00:00',
+    intervalMinutes: 1,
+    enabled: true,
+    aiGenerated: false,
+    createdAt: nowIso,
+    lastTriggeredAt: nowIso,
+    originalMessage: message,
+    aiGeneratedSuccess: false,
+    upgradeReport: {
+      runId,
+      status: runStatus,
+      conclusion: runConclusion || (isSuccess ? 'success' : 'failure'),
+      actionsUrl: runHtmlUrl,
+      prUrl: track.prUrl,
+      failedSteps,
+      errorReasons,
+    },
+  };
+
+  return { notification, changed: true };
+}
+
 export const proactiveMessagesPlugin: PluginTool = {
   declaration: {
     name: 'manage_proactive_messages',
     description:
-      '管理桌寵的主動訊息、定時提醒與閒置關懷排程。支援新增排程(add)、列出所有排程與狀態(list)、啟用或停用排程/總開關(toggle)、切換 AI 隨機生成主題句子(toggle_ai)、刪除排程(delete)以及檢查目前是否有到期應觸發的主動訊息(check_due，若規則開啟 aiGenerated 則自動由 Gemini AI 根據主題與參考提示生成自然可愛的關懷句子，失敗時退回原 message)。',
+      '管理桌寵的主動訊息、定時提醒、閒置關懷排程，以及自我升級（GitHub Actions self-upgrade-runner.yml）的完成/失敗主動回報追蹤。支援新增排程(add)、列出所有排程與升級追蹤狀態(list)、啟用或停用排程/總開關(toggle)、切換 AI 隨機生成(toggle_ai)、刪除排程(delete)、登記追蹤自我升級任務(track_upgrade，建議在呼叫 request_self_upgrade 後立即呼叫以登記追蹤)、以及檢查到期主動訊息與升級結果(check_due，會自動查詢 GitHub Actions 狀態並在狀態由進行中變為 completed 時回報成功摘要或失敗步驟與原因，並標記已回報避免重複通知)。',
     parameters: {
       type: 'OBJECT',
       properties: {
         action: {
           type: 'STRING',
-          description: '操作類型：add | list | toggle | toggle_ai | delete | check_due',
+          description: '操作類型：add | list | toggle | toggle_ai | delete | track_upgrade | check_due',
         },
         rule_id: {
           type: 'STRING',
@@ -512,6 +908,34 @@ export const proactiveMessagesPlugin: PluginTool = {
           type: 'STRING',
           description: '選填，用於 check_due 時是否自動將到期規則標記為已觸發（預設為 true）。',
         },
+        actions_url: {
+          type: 'STRING',
+          description: '自我升級 GitHub Actions 連結（用於 track_upgrade 或 check_due，例如 https://github.com/owner/repo/actions/runs/12345）。',
+        },
+        repo: {
+          type: 'STRING',
+          description: 'GitHub 倉庫 owner/repo（用於 track_upgrade 或 check_due）。',
+        },
+        workflow_file: {
+          type: 'STRING',
+          description: 'GitHub Actions workflow 檔名，預設為 self-upgrade-runner.yml。',
+        },
+        run_id: {
+          type: 'STRING',
+          description: '欲追蹤或檢查的 GitHub Actions Run ID。',
+        },
+        pr_url: {
+          type: 'STRING',
+          description: '選填，自我升級對應的 PR 連結。',
+        },
+        upgrade_summary: {
+          type: 'STRING',
+          description: '選填，本次自我升級的功能摘要說明（成功回報時會顯示）。',
+        },
+        github_token: {
+          type: 'STRING',
+          description: '選填，查詢私有倉庫或 Actions 原始錯誤 log 時使用的 GitHub Token。',
+        },
       },
       required: ['action'],
     },
@@ -520,10 +944,13 @@ export const proactiveMessagesPlugin: PluginTool = {
     const userId = asTrimmedString(ctx?.userId) || 'default_user';
     const action = asTrimmedString(args.action).toLowerCase();
 
-    if (!action || !['add', 'list', 'toggle', 'toggle_ai', 'delete', 'check_due'].includes(action)) {
+    if (
+      !action ||
+      !['add', 'list', 'toggle', 'toggle_ai', 'delete', 'track_upgrade', 'check_due'].includes(action)
+    ) {
       return {
         ok: false,
-        error: '無效的 action 參數，請使用 add、list、toggle、toggle_ai、delete 或 check_due。',
+        error: '無效的 action 參數，請使用 add、list、toggle、toggle_ai、delete、track_upgrade 或 check_due。',
       };
     }
 
@@ -543,6 +970,21 @@ export const proactiveMessagesPlugin: PluginTool = {
         lastInteractionAt: store.lastInteractionAt,
         total: store.rules.length,
         rules: store.rules,
+        upgradeTracking: store.upgradeTracking,
+      };
+    }
+
+    if (action === 'track_upgrade') {
+      const nowIso = new Date().toISOString();
+      const regResult = registerUpgradeTracking(store, args, ctx, nowIso);
+      store.lastInteractionAt = nowIso;
+      await saveUserStore(store, ctx);
+      return {
+        ok: true,
+        action: 'track_upgrade',
+        registered: regResult.registered,
+        alreadyReported: regResult.alreadyReported,
+        upgradeTracking: store.upgradeTracking,
       };
     }
 
@@ -572,10 +1014,7 @@ export const proactiveMessagesPlugin: PluginTool = {
       const title = rawTitle || (rawMessage ? rawMessage.slice(0, 20) : defaultTitleMap[scheduleType]);
       const message = rawMessage || rawTitle || defaultMsgMap[scheduleType];
       const time = normalizeTime(rawTime, scheduleType === 'daily' ? '09:00' : '00:00');
-      const intervalMinutes = asPositiveInt(
-        rawInterval,
-        scheduleType === 'idle' ? 120 : 60
-      );
+      const intervalMinutes = asPositiveInt(rawInterval, scheduleType === 'idle' ? 120 : 60);
       const enabled = asBoolean(args.enabled, true);
       const aiGenerated = asBoolean(args.ai_generated ?? args.aiGenerated, false);
       const nowIso = new Date().toISOString();
@@ -784,11 +1223,30 @@ export const proactiveMessagesPlugin: PluginTool = {
         hasDue: false,
         dueCount: 0,
         dueRules: [],
+        upgradeTracking: store.upgradeTracking,
         checkedAt: nowIso,
         timezone: store.timezone,
         localDate: zonedNow.dateStr,
         localTime: zonedNow.timeStr,
       };
+    }
+
+    let storeMutated = false;
+    const hasUpgradeParams =
+      asTrimmedString(args.actions_url) !== '' ||
+      asTrimmedString(args.repo) !== '' ||
+      asTrimmedString(args.run_id) !== '';
+
+    if (hasUpgradeParams && !store.upgradeTracking.tracking) {
+      const reg = registerUpgradeTracking(store, args, ctx, nowIso);
+      if (reg.registered) {
+        storeMutated = true;
+      }
+    }
+
+    const upgradeCheck = await checkTrackedUpgradeProgress(store, args, ctx, nowIso, nowMs);
+    if (upgradeCheck.changed) {
+      storeMutated = true;
     }
 
     const matchedRules: ProactiveRule[] = [];
@@ -816,6 +1274,7 @@ export const proactiveMessagesPlugin: PluginTool = {
           matchedRules.push(rule);
           if (markTriggered) {
             rule.lastTriggeredAt = nowIso;
+            storeMutated = true;
           }
         }
       } else if (rule.scheduleType === 'interval') {
@@ -826,6 +1285,7 @@ export const proactiveMessagesPlugin: PluginTool = {
           matchedRules.push(rule);
           if (markTriggered) {
             rule.lastTriggeredAt = nowIso;
+            storeMutated = true;
           }
         }
       } else if (rule.scheduleType === 'idle') {
@@ -837,16 +1297,21 @@ export const proactiveMessagesPlugin: PluginTool = {
           matchedRules.push(rule);
           if (markTriggered) {
             rule.lastTriggeredAt = nowIso;
+            storeMutated = true;
           }
         }
       }
     }
 
-    if (markTriggered && matchedRules.length > 0) {
+    if (storeMutated) {
       await saveUserStore(store, ctx);
     }
 
-    const dueRules: Array<ProactiveRule & { originalMessage?: string; aiGeneratedSuccess?: boolean }> = [];
+    const dueRules: DueNotificationItem[] = [];
+    if (upgradeCheck.notification) {
+      dueRules.push(upgradeCheck.notification);
+    }
+
     for (const rule of matchedRules) {
       if (rule.aiGenerated) {
         const genResult = await generateAiCareSentence(rule, zonedNow, ctx, args);
@@ -872,6 +1337,7 @@ export const proactiveMessagesPlugin: PluginTool = {
       hasDue: dueRules.length > 0,
       dueCount: dueRules.length,
       dueRules,
+      upgradeTracking: store.upgradeTracking,
       effectiveIdleMinutes: Math.round(effectiveIdleMinutes),
       checkedAt: nowIso,
       timezone: store.timezone,
