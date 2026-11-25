@@ -10,6 +10,7 @@ export interface ProactiveRule {
   time: string;
   intervalMinutes: number;
   enabled: boolean;
+  aiGenerated: boolean;
   createdAt: string;
   lastTriggeredAt: string | null;
 }
@@ -31,6 +32,20 @@ interface KvNamespaceLike {
 interface CacheLike {
   match: (request: Request | string) => Promise<Response | undefined>;
   put: (request: Request | string, response: Response) => Promise<void>;
+}
+
+interface GeminiCandidatePart {
+  text?: string;
+}
+
+interface GeminiCandidate {
+  content?: {
+    parts?: GeminiCandidatePart[];
+  };
+}
+
+interface GeminiGenerateContentResponse {
+  candidates?: GeminiCandidate[];
 }
 
 const MEMORY_STORE = new Map<string, ProactiveUserStore>();
@@ -107,6 +122,111 @@ function extractKvFromContext(ctx: { userId: string }): KvNamespaceLike | null {
   return null;
 }
 
+function extractGeminiApiKey(ctx: { userId: string }, args: Record<string, unknown>): string {
+  const fromArgs = asTrimmedString(args.gemini_api_key ?? args.api_key);
+  if (fromArgs) return fromArgs;
+
+  const raw = ctx as unknown as Record<string, unknown>;
+  const directKeys = [
+    raw.geminiApiKey,
+    raw.apiKey,
+    raw.GEMINI_API_KEY,
+    raw.GOOGLE_API_KEY,
+  ];
+  for (const candidate of directKeys) {
+    const key = asTrimmedString(candidate);
+    if (key) return key;
+  }
+
+  if (raw.env && typeof raw.env === 'object') {
+    const envRec = raw.env as Record<string, unknown>;
+    const envKeys = [
+      envRec.GEMINI_API_KEY,
+      envRec.GOOGLE_API_KEY,
+      envRec.GEMINI_KEY,
+      envRec.API_KEY,
+    ];
+    for (const candidate of envKeys) {
+      const key = asTrimmedString(candidate);
+      if (key) return key;
+    }
+  }
+
+  const g = globalThis as unknown as Record<string, unknown>;
+  const globalKey = asTrimmedString(g.GEMINI_API_KEY ?? g.GOOGLE_API_KEY);
+  if (globalKey) return globalKey;
+
+  return '';
+}
+
+async function generateAiCareSentence(
+  rule: ProactiveRule,
+  localTimeInfo: { dateStr: string; timeStr: string },
+  ctx: { userId: string },
+  args: Record<string, unknown>
+): Promise<{ message: string; aiGeneratedSuccess: boolean }> {
+  const fallbackMessage = rule.message || rule.title || '主人～記得休息一下喔！🐾';
+  const apiKey = extractGeminiApiKey(ctx, args);
+  if (!apiKey) {
+    return { message: fallbackMessage, aiGeneratedSuccess: false };
+  }
+
+  const scheduleLabel =
+    rule.scheduleType === 'daily'
+      ? `每日定時 (${rule.time})`
+      : rule.scheduleType === 'interval'
+        ? `每 ${rule.intervalMinutes} 分鐘週期提醒`
+        : `閒置滿 ${rule.intervalMinutes} 分鐘關懷`;
+
+  const prompt = [
+    '你是一隻溫暖、貼心、有活力的 AI 桌寵，正在主動關心主人。',
+    `目前時間：${localTimeInfo.dateStr} ${localTimeInfo.timeStr}`,
+    `關懷類型：${scheduleLabel}`,
+    `主題標題：${rule.title}`,
+    `參考提示或備用句子：${fallbackMessage}`,
+    '請根據上述主題與參考提示，即時創作一句自然可愛、符合桌寵性格且不重複的繁體中文主動關懷句子（約 20～60 字，可搭配 1～2 個貼切 Emoji）。',
+    '請直接輸出那句給主人的話，不要加上引號或任何額外說明。',
+  ].join('\n');
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+
+  try {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.9,
+          maxOutputTokens: 150,
+        },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      return { message: fallbackMessage, aiGeneratedSuccess: false };
+    }
+
+    const data = (await res.json()) as GeminiGenerateContentResponse;
+    const firstCandidate = Array.isArray(data.candidates) ? data.candidates[0] : undefined;
+    const parts = firstCandidate?.content?.parts;
+    const firstPart = Array.isArray(parts) ? parts[0] : undefined;
+    const generatedText = asTrimmedString(firstPart?.text);
+
+    if (generatedText.length > 0) {
+      return { message: generatedText, aiGeneratedSuccess: true };
+    }
+    return { message: fallbackMessage, aiGeneratedSuccess: false };
+  } catch {
+    return { message: fallbackMessage, aiGeneratedSuccess: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function getWorkersCache(): CacheLike | null {
   const g = globalThis as unknown as {
     caches?: { default?: CacheLike };
@@ -135,6 +255,7 @@ function createDefaultRules(nowIso: string): ProactiveRule[] {
       time: '09:00',
       intervalMinutes: 60,
       enabled: true,
+      aiGenerated: false,
       createdAt: nowIso,
       lastTriggeredAt: null,
     },
@@ -146,6 +267,7 @@ function createDefaultRules(nowIso: string): ProactiveRule[] {
       time: '00:00',
       intervalMinutes: 120,
       enabled: true,
+      aiGenerated: false,
       createdAt: nowIso,
       lastTriggeredAt: null,
     },
@@ -183,6 +305,7 @@ function sanitizeStore(raw: unknown, userId: string): ProactiveUserStore {
     const time = normalizeTime(asTrimmedString(r.time), '09:00');
     const intervalMinutes = asPositiveInt(r.intervalMinutes, 60);
     const enabled = asBoolean(r.enabled, true);
+    const aiGenerated = asBoolean(r.aiGenerated ?? r.ai_generated, false);
     const createdAt = asTrimmedString(r.createdAt) || nowIso;
     const lastTriggeredAt = asTrimmedString(r.lastTriggeredAt) || null;
     rules.push({
@@ -193,6 +316,7 @@ function sanitizeStore(raw: unknown, userId: string): ProactiveUserStore {
       time,
       intervalMinutes,
       enabled,
+      aiGenerated,
       createdAt,
       lastTriggeredAt,
     });
@@ -336,25 +460,25 @@ export const proactiveMessagesPlugin: PluginTool = {
   declaration: {
     name: 'manage_proactive_messages',
     description:
-      '管理桌寵的主動訊息、定時提醒與閒置關懷排程。支援新增排程(add)、列出所有排程與狀態(list)、啟用或停用排程/總開關(toggle)、刪除排程(delete)以及檢查目前是否有到期應觸發的主動訊息(check_due)。',
+      '管理桌寵的主動訊息、定時提醒與閒置關懷排程。支援新增排程(add)、列出所有排程與狀態(list)、啟用或停用排程/總開關(toggle)、切換 AI 隨機生成主題句子(toggle_ai)、刪除排程(delete)以及檢查目前是否有到期應觸發的主動訊息(check_due，若規則開啟 aiGenerated 則自動由 Gemini AI 根據主題與參考提示生成自然可愛的關懷句子，失敗時退回原 message)。',
     parameters: {
       type: 'OBJECT',
       properties: {
         action: {
           type: 'STRING',
-          description: '操作類型：add | list | toggle | delete | check_due',
+          description: '操作類型：add | list | toggle | toggle_ai | delete | check_due',
         },
         rule_id: {
           type: 'STRING',
-          description: '指定操作的排程 ID（用於 toggle 或 delete；若 toggle 時不填或填 global 則切換整體主動訊息總開關）。',
+          description: '指定操作的排程 ID 或標題（用於 toggle、toggle_ai 或 delete；若 toggle 時不填或填 global 則切換整體主動訊息總開關）。',
         },
         title: {
           type: 'STRING',
-          description: '排程標題（用於 add，例如「早安問候」、「喝水提醒」）。',
+          description: '排程標題／主題（用於 add，例如「早安問候」、「喝水提醒」）。',
         },
         message: {
           type: 'STRING',
-          description: '主動訊息內容或關懷提示詞（用於 add）。',
+          description: '主動訊息內容，或開啟 AI 隨機生成時的參考提示／備用內容（用於 add）。',
         },
         schedule_type: {
           type: 'STRING',
@@ -370,7 +494,11 @@ export const proactiveMessagesPlugin: PluginTool = {
         },
         enabled: {
           type: 'STRING',
-          description: '是否啟用：true 或 false（用於 add 或 toggle）。',
+          description: '是否啟用排程：true 或 false（用於 add 或 toggle）。',
+        },
+        ai_generated: {
+          type: 'STRING',
+          description: '是否每次由 AI 根據主題(title)與參考提示(message)隨機生成關懷句子：true 或 false（預設 false，用於 add、toggle 或 toggle_ai）。',
         },
         timezone: {
           type: 'STRING',
@@ -392,10 +520,10 @@ export const proactiveMessagesPlugin: PluginTool = {
     const userId = asTrimmedString(ctx?.userId) || 'default_user';
     const action = asTrimmedString(args.action).toLowerCase();
 
-    if (!action || !['add', 'list', 'toggle', 'delete', 'check_due'].includes(action)) {
+    if (!action || !['add', 'list', 'toggle', 'toggle_ai', 'delete', 'check_due'].includes(action)) {
       return {
         ok: false,
-        error: '無效的 action 參數，請使用 add、list、toggle、delete 或 check_due。',
+        error: '無效的 action 參數，請使用 add、list、toggle、toggle_ai、delete 或 check_due。',
       };
     }
 
@@ -449,6 +577,7 @@ export const proactiveMessagesPlugin: PluginTool = {
         scheduleType === 'idle' ? 120 : 60
       );
       const enabled = asBoolean(args.enabled, true);
+      const aiGenerated = asBoolean(args.ai_generated ?? args.aiGenerated, false);
       const nowIso = new Date().toISOString();
       const customId = asTrimmedString(args.rule_id ?? args.id);
       const id = customId || `rule-${crypto.randomUUID().slice(0, 8)}`;
@@ -461,6 +590,7 @@ export const proactiveMessagesPlugin: PluginTool = {
         time,
         intervalMinutes,
         enabled,
+        aiGenerated,
         createdAt: nowIso,
         lastTriggeredAt: null,
       };
@@ -485,9 +615,51 @@ export const proactiveMessagesPlugin: PluginTool = {
       };
     }
 
+    if (action === 'toggle_ai') {
+      const ruleId = asTrimmedString(args.rule_id ?? args.ruleId ?? args.id);
+      if (!ruleId) {
+        return {
+          ok: false,
+          action: 'toggle_ai',
+          error: '請提供欲切換 AI 隨機生成設定的 rule_id。',
+          rules: store.rules,
+        };
+      }
+
+      const targetRule = store.rules.find((r) => r.id === ruleId || r.title === ruleId);
+      if (!targetRule) {
+        return {
+          ok: false,
+          action: 'toggle_ai',
+          error: `找不到 ID 或標題為「${ruleId}」的排程。`,
+          globalEnabled: store.globalEnabled,
+          rules: store.rules,
+        };
+      }
+
+      const rawAiVal = args.ai_generated ?? args.aiGenerated ?? args.enabled;
+      const hasExplicitAi = rawAiVal !== undefined && rawAiVal !== '';
+      targetRule.aiGenerated = hasExplicitAi
+        ? asBoolean(rawAiVal, !targetRule.aiGenerated)
+        : !targetRule.aiGenerated;
+      store.lastInteractionAt = new Date().toISOString();
+      await saveUserStore(store, ctx);
+
+      return {
+        ok: true,
+        action: 'toggle_ai',
+        target: 'rule_ai',
+        globalEnabled: store.globalEnabled,
+        rule: targetRule,
+        rules: store.rules,
+      };
+    }
+
     if (action === 'toggle') {
       const ruleId = asTrimmedString(args.rule_id ?? args.ruleId ?? args.id);
       const hasExplicitEnabled = args.enabled !== undefined && args.enabled !== '';
+      const rawAiVal = args.ai_generated ?? args.aiGenerated;
+      const hasExplicitAi = rawAiVal !== undefined && rawAiVal !== '';
 
       if (!ruleId || ruleId.toLowerCase() === 'global' || ruleId.toLowerCase() === 'all') {
         store.globalEnabled = hasExplicitEnabled
@@ -515,9 +687,17 @@ export const proactiveMessagesPlugin: PluginTool = {
         };
       }
 
-      targetRule.enabled = hasExplicitEnabled
-        ? asBoolean(args.enabled, !targetRule.enabled)
-        : !targetRule.enabled;
+      if (hasExplicitAi && !hasExplicitEnabled) {
+        targetRule.aiGenerated = asBoolean(rawAiVal, !targetRule.aiGenerated);
+      } else {
+        targetRule.enabled = hasExplicitEnabled
+          ? asBoolean(args.enabled, !targetRule.enabled)
+          : !targetRule.enabled;
+        if (hasExplicitAi) {
+          targetRule.aiGenerated = asBoolean(rawAiVal, targetRule.aiGenerated);
+        }
+      }
+
       store.lastInteractionAt = new Date().toISOString();
       await saveUserStore(store, ctx);
 
@@ -611,7 +791,7 @@ export const proactiveMessagesPlugin: PluginTool = {
       };
     }
 
-    const dueRules: ProactiveRule[] = [];
+    const matchedRules: ProactiveRule[] = [];
 
     for (const rule of store.rules) {
       if (!rule.enabled) continue;
@@ -633,7 +813,7 @@ export const proactiveMessagesPlugin: PluginTool = {
         }
 
         if (withinDailyWindow && !alreadyTriggeredToday) {
-          dueRules.push({ ...rule });
+          matchedRules.push(rule);
           if (markTriggered) {
             rule.lastTriggeredAt = nowIso;
           }
@@ -643,7 +823,7 @@ export const proactiveMessagesPlugin: PluginTool = {
         const refIso = rule.lastTriggeredAt || rule.createdAt;
         const refMs = Date.parse(refIso);
         if (!Number.isFinite(refMs) || nowMs - refMs >= intervalMs) {
-          dueRules.push({ ...rule });
+          matchedRules.push(rule);
           if (markTriggered) {
             rule.lastTriggeredAt = nowIso;
           }
@@ -654,7 +834,7 @@ export const proactiveMessagesPlugin: PluginTool = {
         const cooldownPassed = !lastTrigMs || !Number.isFinite(lastTrigMs) || nowMs - lastTrigMs >= cooldownMs;
 
         if (effectiveIdleMinutes >= rule.intervalMinutes && cooldownPassed) {
-          dueRules.push({ ...rule });
+          matchedRules.push(rule);
           if (markTriggered) {
             rule.lastTriggeredAt = nowIso;
           }
@@ -662,8 +842,27 @@ export const proactiveMessagesPlugin: PluginTool = {
       }
     }
 
-    if (markTriggered && dueRules.length > 0) {
+    if (markTriggered && matchedRules.length > 0) {
       await saveUserStore(store, ctx);
+    }
+
+    const dueRules: Array<ProactiveRule & { originalMessage?: string; aiGeneratedSuccess?: boolean }> = [];
+    for (const rule of matchedRules) {
+      if (rule.aiGenerated) {
+        const genResult = await generateAiCareSentence(rule, zonedNow, ctx, args);
+        dueRules.push({
+          ...rule,
+          message: genResult.message,
+          originalMessage: rule.message,
+          aiGeneratedSuccess: genResult.aiGeneratedSuccess,
+        });
+      } else {
+        dueRules.push({
+          ...rule,
+          originalMessage: rule.message,
+          aiGeneratedSuccess: false,
+        });
+      }
     }
 
     return {
