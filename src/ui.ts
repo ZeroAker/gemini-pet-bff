@@ -20,11 +20,12 @@ export const CHAT_HTML = `<!DOCTYPE html>
     header {
       background: #171a26;
       border-bottom: 1px solid #262b3d;
-      padding: 12px 16px;
+      padding: 10px 14px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      gap: 8px;
+      flex-wrap: wrap;
     }
     .pet-info { display: flex; align-items: center; gap: 10px; }
     .avatar {
@@ -35,9 +36,74 @@ export const CHAT_HTML = `<!DOCTYPE html>
     }
     .title { font-size: 15px; font-weight: 600; }
     .stats { font-size: 12px; color: #9aa3bd; margin-top: 2px; }
+    .header-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     .btn-icon {
       background: #23283a; color: #cfd5e6; border: 1px solid #323952;
       border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer;
+    }
+    .btn-icon.active {
+      background: #2c2856; color: #dcd6ff; border-color: #6c5ce7;
+    }
+    .panel-bar {
+      display: none;
+      background: #141827;
+      border-bottom: 1px solid #2b3147;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: #cfd5e6;
+      max-height: 44dvh;
+      overflow-y: auto;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .proactive-section {
+      border-top: 1px solid #242a3d;
+      padding-top: 8px;
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .proactive-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .proactive-input, .proactive-select {
+      background: #0f111a;
+      color: #e6e8f0;
+      border: 1px solid #2f3650;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 12px;
+      outline: none;
+    }
+    .proactive-input:focus, .proactive-select:focus { border-color: #7c6ff7; }
+    .proactive-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .proactive-item {
+      background: #1a1f31;
+      border: 1px solid #2a314a;
+      border-radius: 8px;
+      padding: 7px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .proactive-item-meta {
+      font-size: 11px;
+      color: #9aa3bd;
+      margin-top: 2px;
     }
     #chat {
       flex: 1;
@@ -136,18 +202,70 @@ export const CHAT_HTML = `<!DOCTYPE html>
         <div class="stats" id="petStats">好感度 -- ｜ 活力 --</div>
       </div>
     </div>
-    <div style="display:flex;gap:6px;">
+    <div class="header-actions">
+      <button class="btn-icon" id="notifyBtn">🔕 通知</button>
+      <button class="btn-icon" id="proactiveBtn">⏰ 主動關懷</button>
       <button class="btn-icon" id="upgradeBtn">升級進度</button>
       <button class="btn-icon" id="settingsBtn">設定</button>
     </div>
   </header>
-  <div id="upgradeBar" style="display:none;background:#141827;border-bottom:1px solid #2b3147;padding:10px 14px;font-size:12px;color:#cfd5e6;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+  <div id="upgradeBar" class="panel-bar">
+    <div class="panel-header">
       <strong id="upgradeTitle">🔄 升級進度追蹤中...</strong>
       <button class="btn-icon" id="closeUpgradeBar" style="padding:2px 8px;font-size:11px;">隱藏</button>
     </div>
     <pre id="upgradeLogs" style="white-space:pre-wrap;font-family:monospace;color:#9aa3bd;max-height:120px;overflow-y:auto;line-height:1.4;"></pre>
     <div id="upgradeLink" style="margin-top:6px;"></div>
+  </div>
+  <div id="proactiveBar" class="panel-bar">
+    <div class="panel-header">
+      <strong>⏰ 主動訊息與系統通知設定</strong>
+      <button class="btn-icon" id="closeProactiveBar" style="padding:2px 8px;font-size:11px;">隱藏</button>
+    </div>
+    <div class="proactive-row">
+      <span id="notifyStatusText" style="color:#9aa3bd;">系統通知狀態檢查中...</span>
+      <button class="btn-icon" id="toggleNotifyInsideBtn" style="padding:3px 8px;font-size:11px;">切換通知</button>
+      <button class="btn-icon" id="testCareNowBtn" style="padding:3px 8px;font-size:11px;">立即測試關懷</button>
+    </div>
+    <div class="proactive-section">
+      <div class="proactive-row">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="idleCareCheckbox" />
+          <span>啟用閒置／回到頁面主動關懷</span>
+        </label>
+        <select id="idleMinutesSelect" class="proactive-select">
+          <option value="1">閒置 1 分鐘</option>
+          <option value="5">閒置 5 分鐘</option>
+          <option value="15">閒置 15 分鐘</option>
+          <option value="30">閒置 30 分鐘</option>
+          <option value="60">閒置 60 分鐘</option>
+        </select>
+      </div>
+    </div>
+    <div class="proactive-section">
+      <div style="font-weight:600;color:#e6e8f0;">新增排程主動訊息</div>
+      <div class="proactive-row">
+        <input id="proactiveMsgInput" class="proactive-input" type="text" placeholder="例如：主人記得喝水伸展一下喔！" style="flex:1;min-width:170px;" />
+        <input id="proactiveDelayInput" class="proactive-input" type="number" min="1" max="1440" value="5" style="width:68px;" title="延遲分鐘數" />
+        <span style="color:#9aa3bd;">分鐘後</span>
+      </div>
+      <div class="proactive-row">
+        <select id="proactiveEmotionSelect" class="proactive-select">
+          <option value="caring">🥰 關懷</option>
+          <option value="happy">😸 開心</option>
+          <option value="idle">🐱 待機</option>
+          <option value="thinking">🤔 思考</option>
+          <option value="sleepy">😪 想睡</option>
+        </select>
+        <select id="proactiveRepeatSelect" class="proactive-select">
+          <option value="0">單次提醒</option>
+          <option value="30">每 30 分鐘重複</option>
+          <option value="60">每 60 分鐘重複</option>
+        </select>
+        <button id="addProactiveBtn" class="btn-icon active" style="padding:5px 12px;font-size:12px;">新增排程</button>
+      </div>
+      <div id="proactiveList" class="proactive-list"></div>
+    </div>
   </div>
   <main id="chat"></main>
 
@@ -192,6 +310,21 @@ export const CHAT_HTML = `<!DOCTYPE html>
     const modalEl = document.getElementById('settingsModal');
     const tokenInput = document.getElementById('tokenInput');
     const uidInput = document.getElementById('uidInput');
+
+    const notifyBtn = document.getElementById('notifyBtn');
+    const proactiveBtn = document.getElementById('proactiveBtn');
+    const proactiveBar = document.getElementById('proactiveBar');
+    const notifyStatusText = document.getElementById('notifyStatusText');
+    const toggleNotifyInsideBtn = document.getElementById('toggleNotifyInsideBtn');
+    const testCareNowBtn = document.getElementById('testCareNowBtn');
+    const idleCareCheckbox = document.getElementById('idleCareCheckbox');
+    const idleMinutesSelect = document.getElementById('idleMinutesSelect');
+    const proactiveMsgInput = document.getElementById('proactiveMsgInput');
+    const proactiveDelayInput = document.getElementById('proactiveDelayInput');
+    const proactiveEmotionSelect = document.getElementById('proactiveEmotionSelect');
+    const proactiveRepeatSelect = document.getElementById('proactiveRepeatSelect');
+    const addProactiveBtn = document.getElementById('addProactiveBtn');
+    const proactiveListEl = document.getElementById('proactiveList');
 
     function detectPlatform() {
       const ua = navigator.userAgent || '';
@@ -268,6 +401,341 @@ export const CHAT_HTML = `<!DOCTYPE html>
       return wrap;
     }
 
+    function supportsWebNotification() {
+      return typeof window !== 'undefined' && 'Notification' in window;
+    }
+
+    function isNotifyEnabled() {
+      return localStorage.getItem('pet_notify_enabled') === '1';
+    }
+
+    function updateNotifyUi() {
+      if (!supportsWebNotification()) {
+        notifyBtn.textContent = '🔕 不支援通知';
+        notifyBtn.classList.remove('active');
+        notifyStatusText.textContent = '此瀏覽器環境不支援 Web Notification API';
+        return;
+      }
+      const perm = Notification.permission;
+      const enabled = isNotifyEnabled() && perm === 'granted';
+      if (enabled) {
+        notifyBtn.textContent = '🔔 通知開';
+        notifyBtn.classList.add('active');
+        notifyStatusText.textContent = '系統通知：已啟用（背景時自動彈出系統通知）';
+      } else if (perm === 'denied') {
+        notifyBtn.textContent = '🔕 通知封鎖';
+        notifyBtn.classList.remove('active');
+        notifyStatusText.textContent = '系統通知：已被瀏覽器封鎖，請至網站權限開啟';
+      } else {
+        notifyBtn.textContent = '🔕 通知關';
+        notifyBtn.classList.remove('active');
+        notifyStatusText.textContent = '系統通知：目前關閉（點擊右側按鈕開啟）';
+      }
+    }
+
+    async function toggleWebNotification() {
+      if (!supportsWebNotification()) {
+        updateNotifyUi();
+        return;
+      }
+      if (isNotifyEnabled() && Notification.permission === 'granted') {
+        localStorage.setItem('pet_notify_enabled', '0');
+        updateNotifyUi();
+        return;
+      }
+      if (Notification.permission === 'default') {
+        try {
+          const result = await Notification.requestPermission();
+          if (result === 'granted') {
+            localStorage.setItem('pet_notify_enabled', '1');
+            try {
+              new Notification('Gemini 桌寵通知已開啟', {
+                body: '之後有定時提醒或主動關懷時會通知你喔！',
+                tag: 'pet-notify-enabled'
+              });
+            } catch (e) {}
+          } else {
+            localStorage.setItem('pet_notify_enabled', '0');
+          }
+        } catch (e) {
+          localStorage.setItem('pet_notify_enabled', '0');
+        }
+      } else if (Notification.permission === 'granted') {
+        localStorage.setItem('pet_notify_enabled', '1');
+        try {
+          new Notification('Gemini 桌寵通知已開啟', {
+            body: '背景主動提醒與關懷通知已恢復啟用。',
+            tag: 'pet-notify-enabled'
+          });
+        } catch (e) {}
+      }
+      updateNotifyUi();
+    }
+
+    function loadProactiveSchedules() {
+      try {
+        const raw = JSON.parse(localStorage.getItem('pet_proactive_schedules') || '[]');
+        return Array.isArray(raw) ? raw : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function saveProactiveSchedules(list) {
+      localStorage.setItem('pet_proactive_schedules', JSON.stringify(list));
+    }
+
+    function renderProactiveList() {
+      const list = loadProactiveSchedules().slice().sort(function (a, b) {
+        return (a.triggerAt || 0) - (b.triggerAt || 0);
+      });
+      proactiveListEl.innerHTML = '';
+      if (list.length === 0) {
+        const emptyEl = document.createElement('div');
+        emptyEl.style.color = '#7e87a3';
+        emptyEl.textContent = '目前沒有待發送的本地排程。';
+        proactiveListEl.appendChild(emptyEl);
+        return;
+      }
+      list.forEach(function (item) {
+        const row = document.createElement('div');
+        row.className = 'proactive-item';
+
+        const info = document.createElement('div');
+        const titleLine = document.createElement('div');
+        const emoji = EMOJI_MAP[item.emotion] || '🥰';
+        titleLine.textContent = emoji + ' ' + item.message;
+        const metaLine = document.createElement('div');
+        metaLine.className = 'proactive-item-meta';
+        const d = new Date(item.triggerAt);
+        const timeStr = isNaN(d.getTime()) ? '' : (String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'));
+        const repeatStr = item.repeatMinutes > 0 ? (' · 每 ' + item.repeatMinutes + ' 分鐘重複') : ' · 單次';
+        metaLine.textContent = '預計 ' + timeStr + ' 發送' + repeatStr;
+        info.appendChild(titleLine);
+        info.appendChild(metaLine);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn-icon';
+        delBtn.style.padding = '3px 8px';
+        delBtn.style.fontSize = '11px';
+        delBtn.textContent = '刪除';
+        delBtn.onclick = function () {
+          const next = loadProactiveSchedules().filter(function (entry) {
+            return entry.id !== item.id;
+          });
+          saveProactiveSchedules(next);
+          renderProactiveList();
+        };
+
+        row.appendChild(info);
+        row.appendChild(delBtn);
+        proactiveListEl.appendChild(row);
+      });
+    }
+
+    function isIdleCareEnabled() {
+      const raw = localStorage.getItem('pet_idle_care_enabled');
+      return raw === null ? true : raw === '1';
+    }
+
+    function getIdleMinutes() {
+      const val = Number(localStorage.getItem('pet_idle_minutes') || '15');
+      return Number.isFinite(val) && val >= 1 ? val : 15;
+    }
+
+    function pickCaringMessage(isWelcomeBack) {
+      const hour = new Date().getHours();
+      if (isWelcomeBack) {
+        return {
+          emotion: 'happy',
+          text: '主人歡迎回來！剛剛都在忙些什麼呢？隨時跟我聊聊吧。'
+        };
+      }
+      if (hour >= 0 && hour < 6) {
+        return {
+          emotion: 'sleepy',
+          text: '已經深夜囉，主人記得早點休息、讓眼睛和腦袋放鬆一下！'
+        };
+      }
+      if (hour >= 11 && hour < 14) {
+        return {
+          emotion: 'caring',
+          text: '午間時間到了，主人記得吃飯補充能量、順便喝杯水喔！'
+        };
+      }
+      if (hour >= 18 && hour < 23) {
+        return {
+          emotion: 'caring',
+          text: '忙碌了一陣子，主人別忘了站起來伸展肩頸、喝口水休息一下。'
+        };
+      }
+      return {
+        emotion: 'caring',
+        text: '主人專心好一陣子了呢！記得喝口水、眨眨眼睛休息一分鐘喔。'
+      };
+    }
+
+    function deliverProactiveMessage(text, emotion, notifyTitle, metaLabel, forceNotify) {
+      const validEmotion = EMOJI_MAP[emotion] ? emotion : 'caring';
+      petEmojiEl.textContent = EMOJI_MAP[validEmotion] || '🥰';
+      const now = Date.now();
+      const log = loadLocalLog();
+      log.push({ role: 'bot', text: text, meta: metaLabel, time: now });
+      saveLocalLog(log);
+      renderMessage('bot', text, metaLabel, now);
+
+      const inBackground = document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus());
+      if ((inBackground || forceNotify) && isNotifyEnabled() && supportsWebNotification() && Notification.permission === 'granted') {
+        try {
+          const n = new Notification(notifyTitle || 'Gemini 桌寵主動訊息', {
+            body: text,
+            tag: 'pet-proactive-' + now
+          });
+          n.onclick = function () {
+            window.focus();
+            n.close();
+          };
+        } catch (e) {}
+      }
+    }
+
+    let lastActivityAt = Date.now();
+    let lastCareSentAt = 0;
+    let hiddenSinceAt = 0;
+
+    function markUserActivity() {
+      lastActivityAt = Date.now();
+    }
+
+    ['pointerdown', 'keydown', 'touchstart'].forEach(function (evtName) {
+      document.addEventListener(evtName, markUserActivity, { passive: true });
+    });
+
+    function checkProactiveTick(fromVisibilityReturn) {
+      const now = Date.now();
+      const schedules = loadProactiveSchedules();
+      let changed = false;
+      const remaining = [];
+
+      schedules.forEach(function (item) {
+        if (item.triggerAt <= now) {
+          changed = true;
+          deliverProactiveMessage(
+            item.message,
+            item.emotion,
+            'Gemini 桌寵排程提醒',
+            '主動訊息 · 排程提醒',
+            false
+          );
+          if (item.repeatMinutes && item.repeatMinutes > 0) {
+            const intervalMs = item.repeatMinutes * 60000;
+            let nextTrigger = item.triggerAt + intervalMs;
+            while (nextTrigger <= now) {
+              nextTrigger += intervalMs;
+            }
+            item.triggerAt = nextTrigger;
+            remaining.push(item);
+          }
+        } else {
+          remaining.push(item);
+        }
+      });
+
+      if (changed) {
+        saveProactiveSchedules(remaining);
+        renderProactiveList();
+      }
+
+      if (!isIdleCareEnabled()) {
+        return;
+      }
+
+      const idleMs = getIdleMinutes() * 60000;
+      const careCooldownOk = (now - lastCareSentAt) >= idleMs;
+      if (!careCooldownOk) {
+        return;
+      }
+
+      if (fromVisibilityReturn && hiddenSinceAt > 0 && (now - hiddenSinceAt) >= idleMs) {
+        const care = pickCaringMessage(true);
+        lastCareSentAt = now;
+        lastActivityAt = now;
+        hiddenSinceAt = 0;
+        deliverProactiveMessage(care.text, care.emotion, 'Gemini 桌寵歡迎你回來', '主動訊息 · 回到頁面關懷', false);
+        return;
+      }
+
+      if (!document.hidden && (now - lastActivityAt) >= idleMs) {
+        const care = pickCaringMessage(false);
+        lastCareSentAt = now;
+        lastActivityAt = now;
+        deliverProactiveMessage(care.text, care.emotion, 'Gemini 桌寵關心你', '主動訊息 · 閒置關懷', false);
+      }
+    }
+
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        hiddenSinceAt = Date.now();
+      } else {
+        checkProactiveTick(true);
+        hiddenSinceAt = 0;
+      }
+    });
+
+    window.addEventListener('focus', function () {
+      checkProactiveTick(false);
+    });
+
+    notifyBtn.onclick = toggleWebNotification;
+    toggleNotifyInsideBtn.onclick = toggleWebNotification;
+    proactiveBtn.onclick = function () {
+      const isOpen = proactiveBar.style.display === 'block';
+      proactiveBar.style.display = isOpen ? 'none' : 'block';
+      if (!isOpen) {
+        updateNotifyUi();
+        renderProactiveList();
+      }
+    };
+    document.getElementById('closeProactiveBar').onclick = function () {
+      proactiveBar.style.display = 'none';
+    };
+    idleCareCheckbox.checked = isIdleCareEnabled();
+    idleMinutesSelect.value = String(getIdleMinutes());
+    idleCareCheckbox.onchange = function () {
+      localStorage.setItem('pet_idle_care_enabled', idleCareCheckbox.checked ? '1' : '0');
+    };
+    idleMinutesSelect.onchange = function () {
+      localStorage.setItem('pet_idle_minutes', idleMinutesSelect.value);
+    };
+    testCareNowBtn.onclick = function () {
+      const care = pickCaringMessage(false);
+      lastCareSentAt = Date.now();
+      lastActivityAt = Date.now();
+      deliverProactiveMessage(care.text, care.emotion, 'Gemini 桌寵主動關懷', '主動訊息 · 測試關懷', true);
+    };
+    addProactiveBtn.onclick = function () {
+      const msg = proactiveMsgInput.value.trim();
+      const delayMin = Number(proactiveDelayInput.value);
+      if (!msg) {
+        proactiveMsgInput.focus();
+        return;
+      }
+      const safeDelay = Number.isFinite(delayMin) && delayMin >= 1 ? Math.round(delayMin) : 5;
+      const repeatMin = Number(proactiveRepeatSelect.value) || 0;
+      const item = {
+        id: Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+        message: msg,
+        emotion: proactiveEmotionSelect.value || 'caring',
+        triggerAt: Date.now() + safeDelay * 60000,
+        repeatMinutes: repeatMin
+      };
+      const list = loadProactiveSchedules();
+      list.push(item);
+      saveProactiveSchedules(list);
+      proactiveMsgInput.value = '';
+      renderProactiveList();
+    };
+
     function openSettings() {
       const cfg = getConfig();
       tokenInput.value = cfg.token;
@@ -300,6 +768,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
         return;
       }
 
+      markUserActivity();
       inputEl.value = '';
       inputEl.style.height = 'auto';
       sendBtn.disabled = true;
@@ -432,6 +901,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
     document.getElementById('upgradeBtn').onclick = startUpgradePolling;
     sendBtn.onclick = sendMessage;
     inputEl.addEventListener('input', function () {
+      markUserActivity();
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 120) + 'px';
     });
@@ -458,7 +928,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       }
     });
 
-    // 初始化載入本地畫面紀錄
+    // 初始化載入本地畫面紀錄與主動訊息檢查器
     const initialLog = loadLocalLog();
     if (initialLog.length === 0) {
       renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天囉。', '', Date.now());
@@ -467,6 +937,13 @@ export const CHAT_HTML = `<!DOCTYPE html>
         renderMessage(item.role, item.text, item.meta, item.time);
       });
     }
+
+    updateNotifyUi();
+    renderProactiveList();
+    checkProactiveTick(false);
+    setInterval(function () {
+      checkProactiveTick(false);
+    }, 10000);
 
     if (!getConfig().token) {
       openSettings();
