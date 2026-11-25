@@ -23,7 +23,7 @@ on:
       model_upgrader:
         description: 'Primary upgrader model'
         required: false
-        default: 'gemini-4-neon'
+        default: 'gemini-4-argon'
         type: string
 
 permissions:
