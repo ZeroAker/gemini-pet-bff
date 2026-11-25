@@ -25,6 +25,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       align-items: center;
       justify-content: space-between;
       gap: 10px;
+      flex-shrink: 0;
     }
     .pet-info { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
     .pet-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
@@ -62,6 +63,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       padding: 10px 14px;
       font-size: 12px;
       color: #cfd5e6;
+      flex-shrink: 0;
     }
     .upgrade-header {
       display: flex;
@@ -70,44 +72,66 @@ export const CHAT_HTML = `<!DOCTYPE html>
       gap: 8px;
       margin-bottom: 6px;
     }
-    .title-progress-slot {
-      display: flex;
-      align-items: center;
+    .header-progress-slot {
+      display: none;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      background: #0b0d14;
+      flex-shrink: 0;
+    }
+    .header-progress-slot.active {
+      display: block;
     }
     .cabin-progress-slot {
       margin-top: 8px;
     }
     .upgrade-progress-wrap {
-      background: #121521;
-      border: 1px solid #2b324d;
-      border-radius: 8px;
-      padding: 4px 8px;
-      margin: 4px 0 2px 0;
       width: 100%;
-      max-width: 280px;
       cursor: pointer;
       user-select: none;
       transition: border-color 0.2s, background 0.2s;
     }
-    .upgrade-progress-wrap:hover {
-      border-color: #6c5ce7;
+    .header-progress-slot .upgrade-progress-wrap {
+      width: 100%;
+      max-width: none;
+      margin: 0;
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      display: block;
+    }
+    .header-progress-slot .upgrade-progress-info {
+      display: none;
+    }
+    .header-progress-slot .upgrade-progress-track {
+      width: 100%;
+      height: 4px;
+      background: #121521;
+      border: none;
+      border-radius: 0;
+      overflow: hidden;
+    }
+    .header-progress-slot .upgrade-progress-fill {
+      border-radius: 0;
     }
     .cabin-progress-slot .upgrade-progress-wrap {
       max-width: none;
       margin: 8px 0 0 0;
       padding: 8px 10px;
       background: #0f121d;
-      border-color: #343d63;
+      border: 1px solid #343d63;
+      border-radius: 8px;
     }
-    .upgrade-progress-info {
+    .cabin-progress-slot .upgrade-progress-wrap:hover {
+      border-color: #6c5ce7;
+    }
+    .cabin-progress-slot .upgrade-progress-info {
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 8px;
-      font-size: 11px;
-      margin-bottom: 3px;
-    }
-    .cabin-progress-slot .upgrade-progress-info {
       font-size: 12px;
       margin-bottom: 5px;
     }
@@ -126,14 +150,11 @@ export const CHAT_HTML = `<!DOCTYPE html>
       flex-shrink: 0;
     }
     .upgrade-progress-track {
-      height: 6px;
+      height: 8px;
       background: #0b0d14;
       border-radius: 99px;
       overflow: hidden;
       border: 1px solid #252b42;
-    }
-    .cabin-progress-slot .upgrade-progress-track {
-      height: 8px;
     }
     .upgrade-progress-fill {
       height: 100%;
@@ -408,17 +429,6 @@ export const CHAT_HTML = `<!DOCTYPE html>
       <div class="avatar" id="petEmoji">🐱</div>
       <div class="pet-meta">
         <div class="title" id="petTitle">Gemini 桌寵</div>
-        <div id="titleProgressSlot" class="title-progress-slot">
-          <div id="upgradeProgressContainer" class="upgrade-progress-wrap" title="點擊切換 Log Cabin（升級日誌面板）">
-            <div class="upgrade-progress-info">
-              <span id="upgradeProgressStatus" class="upgrade-progress-status">升級狀態：待機中</span>
-              <span id="upgradeProgressPercent" class="upgrade-progress-percent">0%</span>
-            </div>
-            <div class="upgrade-progress-track">
-              <div id="upgradeProgressFill" class="upgrade-progress-fill idle" style="width: 0%;"></div>
-            </div>
-          </div>
-        </div>
         <div class="stats" id="petStats">好感度 -- ｜ 活力 --</div>
       </div>
     </div>
@@ -429,6 +439,18 @@ export const CHAT_HTML = `<!DOCTYPE html>
       <button class="btn-icon" id="settingsBtn">設定</button>
     </div>
   </header>
+
+  <div id="titleProgressSlot" class="header-progress-slot">
+    <div id="upgradeProgressContainer" class="upgrade-progress-wrap" title="點擊切換 Log Cabin（升級日誌面板）">
+      <div class="upgrade-progress-info">
+        <span id="upgradeProgressStatus" class="upgrade-progress-status">升級狀態：待機中</span>
+        <span id="upgradeProgressPercent" class="upgrade-progress-percent">0%</span>
+      </div>
+      <div class="upgrade-progress-track">
+        <div id="upgradeProgressFill" class="upgrade-progress-fill idle" style="width: 0%;"></div>
+      </div>
+    </div>
+  </div>
 
   <div id="upgradeBar">
     <div class="upgrade-header">
@@ -861,6 +883,20 @@ export const CHAT_HTML = `<!DOCTYPE html>
     var upgradeProgressPercentEl = document.getElementById('upgradeProgressPercent');
     var upgradeProgressFillEl = document.getElementById('upgradeProgressFill');
 
+    function isUpgradeStatusInProgress(st) {
+      if (!st || typeof st !== 'object' || st.is_stale) return false;
+      var s = String(st.status || '').toLowerCase();
+      return (
+        s === 'running' ||
+        s === 'in_progress' ||
+        s === 'queued' ||
+        s === 'waiting' ||
+        s === 'pending' ||
+        s === 'requested' ||
+        s === 'pr_created'
+      );
+    }
+
     function updateProgressBarUI(percentVal, statusLabel, stateType) {
       var pct = Math.max(0, Math.min(100, Math.round(Number(percentVal) || 0)));
       upgradeProgressPercentEl.textContent = pct + '%';
@@ -878,11 +914,12 @@ export const CHAT_HTML = `<!DOCTYPE html>
         };
       }
 
+      var s = String(st.status || '').toLowerCase();
       var explicitPct = typeof st.progress === 'number' ? st.progress : (typeof st.percent === 'number' ? st.percent : null);
       var logs = Array.isArray(st.logs) ? st.logs : [];
       var joinedLogs = logs.join(' ');
 
-      if (st.status === 'merged' || st.status === 'completed' || st.status === 'success') {
+      if (s === 'merged' || s === 'completed' || s === 'success') {
         return {
           percent: 100,
           label: '🎉 升級已合併完成',
@@ -890,7 +927,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
         };
       }
 
-      if (st.status === 'pr_created') {
+      if (s === 'pr_created') {
         return {
           percent: explicitPct !== null ? explicitPct : 92,
           label: '✅ PR 已建立，等待合併',
@@ -898,7 +935,22 @@ export const CHAT_HTML = `<!DOCTYPE html>
         };
       }
 
-      if (st.status === 'running') {
+      if (s === 'queued' || s === 'waiting' || s === 'pending' || s === 'requested') {
+        if (st.is_stale) {
+          return {
+            percent: explicitPct !== null ? explicitPct : 90,
+            label: '⚠️ 任務逾時無心跳回應',
+            state: 'error'
+          };
+        }
+        return {
+          percent: explicitPct !== null ? explicitPct : 10,
+          label: '⏳ 升級任務排隊準備中...',
+          state: 'running'
+        };
+      }
+
+      if (s === 'running' || s === 'in_progress') {
         if (st.is_stale) {
           return {
             percent: explicitPct !== null ? explicitPct : 90,
@@ -939,6 +991,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       if (isLogCabinOpen) {
         upgradeBar.style.display = 'block';
         upgradeBtnEl.classList.add('active');
+        titleProgressSlotEl.classList.remove('active');
         if (upgradeProgressContainerEl.parentNode !== cabinProgressSlotEl) {
           cabinProgressSlotEl.appendChild(upgradeProgressContainerEl);
         }
@@ -947,6 +1000,11 @@ export const CHAT_HTML = `<!DOCTYPE html>
         upgradeBtnEl.classList.remove('active');
         if (upgradeProgressContainerEl.parentNode !== titleProgressSlotEl) {
           titleProgressSlotEl.appendChild(upgradeProgressContainerEl);
+        }
+        if (isUpgradeActive) {
+          titleProgressSlotEl.classList.add('active');
+        } else {
+          titleProgressSlotEl.classList.remove('active');
         }
       }
     }
@@ -998,7 +1056,8 @@ export const CHAT_HTML = `<!DOCTYPE html>
         var prog = computeUpgradeProgressInfo(st);
         updateProgressBarUI(prog.percent, prog.label, prog.state);
 
-        isUpgradeActive = (st.status === 'running' || st.status === 'pr_created') && !st.is_stale;
+        isUpgradeActive = isUpgradeStatusInProgress(st);
+        syncLogCabinLayout();
         ensurePollingState();
 
         if (typeof window.syncUpgradeTrackingFromStatus === 'function') {
@@ -1012,13 +1071,16 @@ export const CHAT_HTML = `<!DOCTYPE html>
           return;
         }
 
+        var s = String(st.status || '').toLowerCase();
         if (st.is_stale) {
           upgradeTitle.textContent = '⚠️ 任務已超過 20 分鐘無心跳更新，請點擊下方 Actions 確認';
-        } else if (st.status === 'running') {
+        } else if (s === 'running' || s === 'in_progress') {
           upgradeTitle.textContent = '🔄 GitHub Actions 升級中（已耗時 ' + (st.elapsed_sec || 0) + ' 秒）';
-        } else if (st.status === 'merged') {
+        } else if (s === 'queued' || s === 'waiting' || s === 'pending' || s === 'requested') {
+          upgradeTitle.textContent = '⏳ 自我升級任務排隊準備中...';
+        } else if (s === 'merged' || s === 'completed' || s === 'success') {
           upgradeTitle.textContent = '🎉 升級已合併至主分支！Cloudflare 約 30 秒後上線';
-        } else if (st.status === 'pr_created') {
+        } else if (s === 'pr_created') {
           upgradeTitle.textContent = '✅ PR 已建立，等待合併';
         } else {
           upgradeTitle.textContent = '❌ 升級終止：' + st.status;
@@ -1055,6 +1117,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
     window.notifyUpgradeStartedUI = function () {
       isUpgradeActive = true;
       updateProgressBarUI(12, '🔄 已啟動自我升級任務...', 'running');
+      syncLogCabinLayout();
       ensurePollingState();
       fetchUpgradeStatus();
     };
@@ -1260,6 +1323,9 @@ export const CHAT_HTML = `<!DOCTYPE html>
       track.reportedKeys.push(reportKey);
       saveUpgradeTrack(track);
       ensureUpgradeWatchTimer();
+      if (typeof window.refreshUpgradeStatusOnce === 'function') {
+        window.refreshUpgradeStatusOnce();
+      }
 
       var nl = String.fromCharCode(10);
       var isSuccess = Boolean(opts.isSuccess);
@@ -1378,7 +1444,8 @@ export const CHAT_HTML = `<!DOCTYPE html>
       var track = loadUpgradeTrack();
       if (st.actions_url) track.actionsUrl = st.actions_url;
       if (st.pr_url) track.prUrl = st.pr_url;
-      if (st.status === 'running' || st.status === 'pr_created') {
+      var s = String(st.status || '').toLowerCase();
+      if (s === 'running' || s === 'in_progress' || s === 'queued' || s === 'waiting' || s === 'pending' || s === 'pr_created') {
         var parsed = parseGitHubRunTarget(track.actionsUrl);
         var doneKey1 = buildUpgradeKey(parsed.runId, track.actionsUrl, track.startedAt, 'success');
         var doneKey2 = buildUpgradeKey(parsed.runId, track.actionsUrl, track.startedAt, 'failure');
@@ -1412,7 +1479,8 @@ export const CHAT_HTML = `<!DOCTYPE html>
         if (st.actions_url) track.actionsUrl = st.actions_url;
         if (st.pr_url) track.prUrl = st.pr_url;
 
-        if (st.status === 'running' || st.status === 'pr_created') {
+        var s = String(st.status || '').toLowerCase();
+        if (s === 'running' || s === 'in_progress' || s === 'queued' || s === 'waiting' || s === 'pending' || s === 'pr_created') {
           var activeParsed = parseGitHubRunTarget(track.actionsUrl);
           var keyOk = buildUpgradeKey(activeParsed.runId, track.actionsUrl, track.startedAt, 'success');
           var keyFail = buildUpgradeKey(activeParsed.runId, track.actionsUrl, track.startedAt, 'failure');
@@ -1452,7 +1520,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
           });
         }
 
-        if (st.status === 'merged') {
+        if (s === 'merged' || s === 'completed' || s === 'success') {
           return emitUpgradeProactiveReport({
             isSuccess: true,
             runId: parseGitHubRunTarget(track.actionsUrl).runId || '',
@@ -1465,7 +1533,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
           });
         }
 
-        if (st.is_stale || (st.status !== 'running' && st.status !== 'pr_created')) {
+        if (st.is_stale || (s !== 'running' && s !== 'in_progress' && s !== 'queued' && s !== 'waiting' && s !== 'pending' && s !== 'pr_created')) {
           var failReason = st.error || (st.is_stale ? '升級任務超過 20 分鐘無心跳更新' : (Array.isArray(st.logs) && st.logs.length > 0 ? st.logs[st.logs.length - 1] : '狀態異常終止'));
           return emitUpgradeProactiveReport({
             isSuccess: false,
