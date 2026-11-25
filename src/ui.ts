@@ -24,11 +24,27 @@ export const CHAT_HTML = `<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
       gap: 10px;
       flex-shrink: 0;
+      width: 100%;
+      position: relative;
+      z-index: 10;
     }
-    .pet-info { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-    .pet-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+    .pet-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1 1 auto;
+      min-width: 180px;
+    }
+    .pet-meta {
+      display: flex;
+      flex-direction: column;
+      min-width: 120px;
+      flex: 1;
+      overflow: hidden;
+    }
     .avatar {
       width: 40px; height: 40px; border-radius: 50%;
       background: linear-gradient(135deg, #6c5ce7, #a29bfe);
@@ -37,13 +53,40 @@ export const CHAT_HTML = `<!DOCTYPE html>
       transition: transform 0.25s ease;
     }
     .avatar.bounce { transform: scale(1.22) rotate(6deg); }
-    .title { font-size: 15px; font-weight: 600; line-height: 1.25; }
-    .stats { font-size: 12px; color: #9aa3bd; margin-top: 2px; }
-    .header-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+    .title {
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .stats {
+      font-size: 12px;
+      color: #9aa3bd;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .header-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: nowrap;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
     .btn-icon {
       background: #23283a; color: #cfd5e6; border: 1px solid #323952;
       border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer;
       transition: border-color 0.2s, background 0.2s, color 0.2s;
+      flex-shrink: 0;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
     }
     .btn-icon:hover { border-color: #6c5ce7; color: #fff; }
     .btn-icon.active {
@@ -51,9 +94,12 @@ export const CHAT_HTML = `<!DOCTYPE html>
       border-color: #7c6ff7;
       color: #fff;
     }
+    .btn-text-short { display: none; }
     .btn-primary {
       background: #6c5ce7; color: #fff; border: none;
       border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+      flex-shrink: 0;
+      white-space: nowrap;
     }
     .btn-primary:disabled, .btn-icon:disabled { opacity: 0.5; cursor: not-allowed; }
     #upgradeBar {
@@ -79,6 +125,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       padding: 0;
       background: #0b0d14;
       flex-shrink: 0;
+      line-height: 0;
     }
     .header-progress-slot.active {
       display: block;
@@ -115,6 +162,68 @@ export const CHAT_HTML = `<!DOCTYPE html>
     }
     .header-progress-slot .upgrade-progress-fill {
       border-radius: 0;
+    }
+    @media (max-width: 768px) {
+      header {
+        padding: 8px 12px;
+        gap: 8px;
+      }
+      .pet-info {
+        flex: 1 1 100%;
+        min-width: 0;
+      }
+      .pet-meta {
+        min-width: 0;
+      }
+      .header-actions {
+        flex: 1 1 100%;
+        width: 100%;
+        justify-content: flex-start;
+        gap: 6px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .header-actions::-webkit-scrollbar {
+        display: none;
+      }
+      .header-actions .btn-icon {
+        flex: 1 0 auto;
+        padding: 5px 9px;
+        font-size: 12px;
+      }
+    }
+    @media (max-width: 480px) {
+      header {
+        padding: 8px 10px;
+        gap: 6px;
+      }
+      .avatar {
+        width: 34px;
+        height: 34px;
+        font-size: 18px;
+      }
+      .title {
+        font-size: 14px;
+      }
+      .stats {
+        font-size: 11px;
+      }
+      .header-actions {
+        gap: 5px;
+      }
+      .header-actions .btn-icon {
+        padding: 5px 8px;
+        font-size: 12px;
+        border-radius: 7px;
+      }
+      .btn-text-full {
+        display: none;
+      }
+      .btn-text-short {
+        display: inline;
+      }
     }
     .cabin-progress-slot .upgrade-progress-wrap {
       max-width: none;
@@ -433,10 +542,10 @@ export const CHAT_HTML = `<!DOCTYPE html>
       </div>
     </div>
     <div class="header-actions">
-      <button class="btn-icon" id="careGameBtn">🎮 餵食與遊戲</button>
-      <button class="btn-icon" id="proactiveBtn">🔔 主動關懷</button>
-      <button class="btn-icon" id="upgradeBtn">升級進度</button>
-      <button class="btn-icon" id="settingsBtn">設定</button>
+      <button class="btn-icon" id="careGameBtn"><span class="btn-text-full">🎮 餵食與遊戲</span><span class="btn-text-short">🎮 餵食遊戲</span></button>
+      <button class="btn-icon" id="proactiveBtn"><span class="btn-text-full">🔔 主動關懷</span><span class="btn-text-short">🔔 關懷</span></button>
+      <button class="btn-icon" id="upgradeBtn"><span class="btn-text-full">升級進度</span><span class="btn-text-short">🪵 升級</span></button>
+      <button class="btn-icon" id="settingsBtn"><span class="btn-text-full">設定</span><span class="btn-text-short">⚙️ 設定</span></button>
     </div>
   </header>
 
