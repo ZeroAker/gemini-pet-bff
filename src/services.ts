@@ -1,4 +1,3 @@
-import { GoogleGenAI } from '@google/genai';
 import type { ChatTurn, Env, PetState, PetStructuredReply } from './types';
 
 // 1. Upstash Redis：管理短期對話快取、好感度狀態與跨裝置鎖
@@ -44,7 +43,7 @@ export class StateService {
 
   async appendHistory(userId: string, turns: ChatTurn[]): Promise<void> {
     const current = await this.getRecentHistory(userId);
-    const updated = [...current, ...turns].slice(-12); // 保留最近 6 輪對話
+    const updated = [...current, ...turns].slice(-12);
     await this.command(['SET', `history:${userId}`, JSON.stringify(updated)]);
   }
 }
@@ -83,18 +82,14 @@ export class MemoryService {
   }
 }
 
-// 3. Google Cloud Vertex AI Gemini：統一人格邏輯與結構化指令輸出
+// 3. Google Cloud Vertex AI（原生 fetch + API Key 直連版）
 export class GeminiService {
-  private ai: GoogleGenAI;
+  private apiKey: string;
   private model: string;
 
   constructor(env: Env) {
-    // 邊緣環境必須從根路徑匯入 @google/genai 並開啟 vertexai Express 模式
-    this.ai = new GoogleGenAI({
-      vertexai: true,
-      apiKey: env.GOOGLE_CLOUD_API_KEY,
-    });
-    this.model = env.GEMINI_MODEL || 'gemini-2.5-flash';
+    this.apiKey = (env.GOOGLE_CLOUD_API_KEY || '').trim();
+    this.model = (env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
   }
 
   async generateReply(params: {
@@ -105,6 +100,10 @@ export class GeminiService {
     memories: string[];
     history: ChatTurn[];
   }): Promise<PetStructuredReply> {
+    if (!this.apiKey) {
+      throw new Error('找不到環境變數 GOOGLE_CLOUD_API_KEY，請確認 Cloudflare Variables 已設定並重新部署');
+    }
+
     const systemPrompt = [
       '你是一隻陪伴在主人電腦與手機螢幕上的專屬 AI 桌寵，性格聰明、貼心帶一點俏皮。',
       '請使用自然簡潔的繁體中文回覆（控制在 80 字以內，適合桌面氣泡框閱讀）。',
@@ -122,17 +121,31 @@ export class GeminiService {
 
     const prompt = `${conversationLog ? `近期對話：\n${conversationLog}\n\n` : ''}主人：${params.userMessage}`;
 
-    const response = await this.ai.models.generateContent({
-      model: this.model,
-      contents: prompt,
-      config: {
-        systemInstruction: systemPrompt,
-        responseMimeType: 'application/json',
-        temperature: 0.7,
-      },
+    const endpoint = `https://aiplatform.googleapis.com/v1/publishers/google/models/${this.model}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.7,
+        },
+      }),
     });
 
-    const parsed = JSON.parse(response.text || '{}') as Partial<PetStructuredReply>;
+    if (!res.ok) {
+      throw new Error(`Google Cloud 回應錯誤 (${res.status}): ${await res.text()}`);
+    }
+
+    const data = (await res.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const parsed = JSON.parse(rawText) as Partial<PetStructuredReply>;
+
     return {
       reply: parsed.reply || '喵？剛剛訊號好像閃了一下，再跟我說一次吧！',
       emotion: parsed.emotion || 'idle',
