@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
+import ts from 'typescript';
 
 const PROTECTED_CORE_TOOLS = [
   'get_current_time',
@@ -92,20 +94,98 @@ async function logStep(step, message) {
   await redisCmd(['SET', `upgrade:${userId}`, JSON.stringify(record)]);
 }
 
-function readLocalPlugins() {
-  const dir = path.resolve('src/plugins');
-  fs.mkdirSync(dir, { recursive: true });
+// 讀取所有允許自我升級的檔案（src/plugins/*.ts 與 src/ui.ts）
+function readEditableFiles() {
   const files = {};
-  for (const name of fs.readdirSync(dir)) {
+  const pluginsDir = path.resolve('src/plugins');
+  fs.mkdirSync(pluginsDir, { recursive: true });
+
+  for (const name of fs.readdirSync(pluginsDir)) {
     if (name.endsWith('.ts')) {
-      files[`src/plugins/${name}`] = fs.readFileSync(path.join(dir, name), 'utf8');
+      files[`src/plugins/${name}`] = fs.readFileSync(path.join(pluginsDir, name), 'utf8');
     }
   }
   if (!files['src/plugins/registry.ts']) {
     files['src/plugins/registry.ts'] =
       "import type { PluginTool } from '../types';\n\nexport const CUSTOM_PLUGINS: PluginTool[] = [];\n";
   }
+
+  const uiPath = path.resolve('src/ui.ts');
+  if (fs.existsSync(uiPath)) {
+    files['src/ui.ts'] = fs.readFileSync(uiPath, 'utf8');
+  }
+
   return files;
+}
+
+// 驗證 src/ui.ts 的核心契約與內嵌 <script> 語法
+function validateUiContent(content) {
+  if (!/\bexport\s+const\s+CHAT_HTML\b/.test(content)) {
+    throw new Error('安全攔截：src/ui.ts 必須匯出 export const CHAT_HTML');
+  }
+
+  const transpiled = ts.transpileModule(content, {
+    reportDiagnostics: true,
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+
+  const tsErrors = (transpiled.diagnostics || []).filter(
+    (d) => d.category === ts.DiagnosticCategory.Error
+  );
+  if (tsErrors.length > 0) {
+    const msg = ts.flattenDiagnosticMessageText(tsErrors[0].messageText, '\n');
+    throw new Error(`安全攔截：src/ui.ts 語法錯誤（請檢查模板字串跳脫）：${msg}`);
+  }
+
+  const sandbox = { exports: {}, module: { exports: {} } };
+  try {
+    vm.runInNewContext(transpiled.outputText, sandbox, { timeout: 1000 });
+  } catch (err) {
+    throw new Error(`安全攔截：src/ui.ts 無法獨立載入（禁止外部 import 或執行期錯誤）：${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const html = sandbox.exports.CHAT_HTML ?? sandbox.module.exports.CHAT_HTML;
+  if (typeof html !== 'string' || !/<html[\s>]/i.test(html)) {
+    throw new Error('安全攔截：CHAT_HTML 必須為完整 HTML 字串');
+  }
+
+  const requiredTokens = ['/v1/pet/interact', '/v1/pet/upgrade/status', 'pet_bff_token'];
+  for (const token of requiredTokens) {
+    if (!html.includes(token)) {
+      throw new Error(`安全攔截：src/ui.ts 缺少必要的核心連線介面 (${token})，已中止修改以避免頁面失效`);
+    }
+  }
+
+  // 逐一檢查所有內嵌 <script> 語法（支援一般腳本與 type="module"）
+  const scriptRegex = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let match;
+  let scriptIndex = 0;
+  while ((match = scriptRegex.exec(html)) !== null) {
+    const attrs = match[1] || '';
+    if (/\bsrc\s*=/i.test(attrs)) continue;
+    const scriptCode = match[2].trim();
+    if (!scriptCode) continue;
+    scriptIndex += 1;
+
+    const checked = ts.transpileModule(scriptCode, {
+      reportDiagnostics: true,
+      compilerOptions: {
+        allowJs: true,
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+      },
+    });
+    const jsErrors = (checked.diagnostics || []).filter(
+      (d) => d.category === ts.DiagnosticCategory.Error
+    );
+    if (jsErrors.length > 0) {
+      const msg = ts.flattenDiagnosticMessageText(jsErrors[0].messageText, '\n');
+      throw new Error(`安全攔截：src/ui.ts 第 ${scriptIndex} 個 <script> 區塊語法錯誤：${msg}`);
+    }
+  }
 }
 
 function validateOperations(ops) {
@@ -116,20 +196,25 @@ function validateOperations(ops) {
   const coreNameRegex = new RegExp(`name\\s*:\\s*['"](${PROTECTED_CORE_TOOLS.join('|')})['"]`);
 
   for (const op of ops) {
-    if (!allowedPluginRegex.test(op.path)) {
-      throw new Error(`安全攔截：禁止修改核心或非插件路徑 (${op.path})`);
+    const isUi = op.path === 'src/ui.ts';
+    const isPlugin = allowedPluginRegex.test(op.path);
+
+    if (!isUi && !isPlugin) {
+      throw new Error(`安全攔截：禁止修改核心或未授權路徑 (${op.path})`);
     }
-    if (op.path === 'src/plugins/registry.ts' && op.action === 'delete') {
-      throw new Error('安全攔截：禁止刪除插件註冊表 src/plugins/registry.ts');
+    if ((op.path === 'src/plugins/registry.ts' || isUi) && op.action === 'delete') {
+      throw new Error(`安全攔截：禁止刪除核心必要檔案 (${op.path})`);
     }
     if (op.action === 'upsert') {
       if (!op.content || op.content.trim().length < 10) {
         throw new Error(`檔案內容無效：${op.path}`);
       }
       if (/\b(eval|new Function)\b/.test(op.content)) {
-        throw new Error(`安全攔截：插件 ${op.path} 包含不允許的動態執行語法`);
+        throw new Error(`安全攔截：${op.path} 包含不允許的動態執行語法`);
       }
-      if (op.path !== 'src/plugins/registry.ts' && coreNameRegex.test(op.content)) {
+      if (isUi) {
+        validateUiContent(op.content);
+      } else if (op.path !== 'src/plugins/registry.ts' && coreNameRegex.test(op.content)) {
         throw new Error(`安全攔截：插件 ${op.path} 不可使用核心保留工具名稱`);
       }
     }
@@ -144,23 +229,27 @@ function buildEndpoint(model) {
   return `${host}/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 }
 
-async function generatePlan(currentPlugins) {
-  const existingFilesText = Object.entries(currentPlugins)
+async function generatePlan(editableFiles) {
+  const existingFilesText = Object.entries(editableFiles)
     .map(([filePath, content]) => `--- FILE: ${filePath} ---\n${content}`)
     .join('\n\n');
 
   const systemPrompt = [
     '你是這隻 TypeScript Cloudflare Workers AI 桌寵的「自我升級架構師」。',
-    '你的任務是根據主人的需求，在 src/plugins/ 目錄內新增、修改或刪除「自訂插件工具」。',
+    '你的任務是根據主人的需求，在允許範圍內新增、修改或刪除「自訂插件工具 (src/plugins/*.ts)」或更新「PWA 前端介面 (src/ui.ts)」。',
     '',
     '【最高安全與核心保護規則】',
     `1. 絕對不可損害或刪除核心功能（核心工具包含：${PROTECTED_CORE_TOOLS.join(', ')}，以及對話記憶、路由、自我升級本身）。`,
     '2. 如果主人要求刪除或破壞核心功能，必須回傳 {"rejected": true, "reject_reason": "原因說明", "summary": "", "operations": []}。',
-    '3. 只能操作 src/plugins/*.ts（檔名限小寫英文、數字與連字號），且絕不可刪除 src/plugins/registry.ts。',
+    '3. 你只能操作 src/plugins/*.ts（檔名限小寫英文、數字與連字號）與 src/ui.ts，且絕不可刪除 src/plugins/registry.ts 或 src/ui.ts。',
     '4. 新增或刪除任何插件檔時，必須同步更新 src/plugins/registry.ts，確保所有 import 與 CUSTOM_PLUGINS 陣列完全一致。',
     '5. 新插件工具名稱（declaration.name）只能用 snake_case 英文，且不可與核心工具同名。',
-    '6. 執行環境為 Cloudflare Workers（不可使用 Node fs 模組或未安裝的第三方套件），僅可使用標準 Web API（fetch, URL, Intl, crypto）與純 TypeScript。',
+    '6. 執行環境為 Cloudflare Workers（不可使用 Node fs 模組或未安裝的第三方套件），後端僅可使用標準 Web API（fetch, URL, Intl, crypto）與純 TypeScript。',
     '7. 程式碼必須完全符合 TypeScript strict mode（無 any、無未使用變數）。',
+    '8. 修改 src/ui.ts 的強制規範：',
+    '   - 必須保留無外部 import 的 `export const CHAT_HTML = ...`，並保留呼叫 `/v1/pet/interact`、`/v1/pet/upgrade/status`、Token 設定彈窗與 localStorage (`pet_bff_token`, `pet_user_id`)。',
+    '   - 留意 `CHAT_HTML` 是 TypeScript 模板字串（反引號包覆），內部 JS 若有反引號、`${` 或 `\\n` 必須正確跳脫，建議內部 JS 優先用單/雙引號與字串相加，避免跳脫錯誤。',
+    '   - 若需求僅涉及後端工具，請勿輸出 src/ui.ts；若僅涉及外觀與前端互動，請勿改動 src/plugins/。',
     '',
     '【PluginTool 型別介面（位於 ../types）】',
     'export interface PluginTool {',
@@ -177,11 +266,11 @@ async function generatePlan(currentPlugins) {
     '}',
     '',
     '【輸出格式】嚴格回傳合法 JSON：',
-    '{"rejected": false, "summary": "繁體中文簡述本次變更", "operations": [{"action": "upsert", "path": "src/plugins/example.ts", "content": "完整檔案程式碼"}, {"action": "delete", "path": "src/plugins/old.ts"}]}',
+    '{"rejected": false, "summary": "繁體中文簡述本次變更", "operations": [{"action": "upsert", "path": "src/ui.ts", "content": "完整檔案程式碼"}]}',
   ].join('\n');
 
   const userPrompt = [
-    '【目前 src/plugins/ 目錄中的所有現有檔案】',
+    '【目前可升級檔案的完整內容】',
     existingFilesText,
     '',
     `【主人的升級需求】\n${instruction}`,
@@ -205,7 +294,7 @@ async function generatePlan(currentPlugins) {
     try {
       const res = await fetch(buildEndpoint(model), {
         method: 'POST',
-        signal: AbortSignal.timeout(180000), // 單模型最多容忍 3 分鐘，不受 Cloudflare 限制
+        signal: AbortSignal.timeout(180000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemPrompt }] },
@@ -247,16 +336,16 @@ async function generatePlan(currentPlugins) {
 
 async function main() {
   await initRecordFromRedis();
-  await logStep('actions_started', 'GitHub Actions 遠端環境已就緒，開始讀取現有插件...');
+  await logStep('actions_started', 'GitHub Actions 遠端環境已就緒，開始讀取插件與 UI 檔案...');
 
   if (!apiKey || !projectId || !instruction) {
     throw new Error('缺少必要參數（GOOGLE_CLOUD_API_KEY / GCP_PROJECT_ID / instruction）');
   }
 
-  const currentPlugins = readLocalPlugins();
-  await logStep('plugins_loaded', `已讀取 ${Object.keys(currentPlugins).length} 個插件檔`);
+  const editableFiles = readEditableFiles();
+  await logStep('files_loaded', `已讀取 ${Object.keys(editableFiles).length} 個可升級檔案（含 UI）`);
 
-  const { plan, modelUsed } = await generatePlan(currentPlugins);
+  const { plan, modelUsed } = await generatePlan(editableFiles);
 
   if (plan.rejected) {
     record.status = 'rejected';
@@ -265,10 +354,9 @@ async function main() {
     return;
   }
 
-  await logStep('validating', '正在執行安全白名單與規則檢查...');
+  await logStep('validating', '正在執行安全白名單、UI 契約與內嵌腳本語法檢查...');
   validateOperations(plan.operations);
 
-  // 套用檔案變更到本地工作區
   for (const op of plan.operations) {
     const absPath = path.resolve(op.path);
     if (op.action === 'delete') {
@@ -279,7 +367,6 @@ async function main() {
     }
   }
 
-  // 直接執行 TypeScript 嚴格編譯檢查（不通過就不推送，徹底保護線上服務）
   await logStep('type_checking', '正在執行 npx tsc --noEmit 型別安全檢查...');
   try {
     execFileSync('npx', ['tsc', '--noEmit'], { encoding: 'utf8', stdio: 'pipe' });
@@ -287,27 +374,25 @@ async function main() {
     const output = `${err.stdout || ''}\n${err.stderr || ''}`.trim().slice(0, 500);
     throw new Error(`TypeScript 編譯未通過，已中止升級：\n${output}`);
   }
-  await logStep('type_check_passed', 'TypeScript 型別檢查全數通過！');
+  await logStep('type_check_passed', 'TypeScript 型別與 UI 檢查全數通過！');
 
-  // 檢查是否有實際檔案差異
   const statusOut = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();
   if (!statusOut) {
     throw new Error('程式碼與現有版本完全相同，無需提交變更');
   }
 
-  // 建立升級分支、提交並開啟 PR
   const branchName = `self-upgrade/${Date.now()}`;
   execFileSync('git', ['config', 'user.name', 'Gemini Pet Bot']);
   execFileSync('git', ['config', 'user.email', 'gemini-pet-bot@users.noreply.github.com']);
   execFileSync('git', ['checkout', '-b', branchName]);
-  execFileSync('git', ['add', 'src/plugins']);
+  execFileSync('git', ['add', '--', 'src/plugins', 'src/ui.ts']);
   execFileSync('git', ['commit', '-m', `feat(self-upgrade): ${plan.summary}`]);
 
   await logStep('pushing_pr', `正在推送分支 ${branchName} 並建立 Pull Request...`);
   execFileSync('git', ['push', 'origin', branchName]);
 
   const prBody = [
-    `由 **${modelUsed}** 在 GitHub Actions 產生，已通過安全路徑白名單與 \`tsc --noEmit\` 檢查。`,
+    `由 **${modelUsed}** 在 GitHub Actions 產生，已通過安全路徑白名單、UI 契約與 \`tsc --noEmit\` 檢查。`,
     '',
     '### 變更檔案',
     ...plan.operations.map((op) => `- \`${op.action.toUpperCase()}\` \`${op.path}\``),
@@ -338,7 +423,7 @@ async function main() {
   execFileSync('gh', ['pr', 'merge', prUrl, '--squash', '--delete-branch'], { encoding: 'utf8' });
 
   record.status = 'merged';
-  await logStep('merged', '升級已自動合併至 main！Cloudflare 約 30 秒後完成自動部署上線。');
+  await logStep('merged', '升級已自動合併至 main！Cloudflare 約 30 秒後完成自動部署，重新整理頁面即可看到新介面。');
 }
 
 main().catch(async (err) => {

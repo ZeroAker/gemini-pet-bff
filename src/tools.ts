@@ -33,16 +33,16 @@ const CORE_TOOL_DECLARATIONS: ToolDeclaration[] = [
       required: ['url'],
     },
   },
-  {
+{
     name: 'request_self_upgrade',
     description:
-      '當主人要求桌寵自我升級、新增新功能、修改或刪除既有自訂功能時呼叫。會在背景啟動 Gemini 4 Neon (High) 撰寫程式碼並自動驗證部署，且自動保護核心功能不受損害。',
+      '當主人要求桌寵自我升級、新增/修改/刪除後端自訂功能插件，或是修改 PWA 前端 UI 介面（配色、排版、按鈕、互動元件、3D 模型顯示等）時呼叫。會在 GitHub Actions 執行安全檢查與自動部署，並保護核心功能不受損害。',
     parameters: {
       type: 'OBJECT',
       properties: {
         instruction: {
           type: 'STRING',
-          description: '清楚描述要新增、修改或刪除的功能規格與細節',
+          description: '清楚描述要修改的 UI 介面細節，或要新增、修改、刪除的功能規格',
         },
       },
       required: ['instruction'],

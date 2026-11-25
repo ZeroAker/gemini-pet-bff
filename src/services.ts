@@ -11,7 +11,7 @@ import type {
 } from './types';
 
 export class StateService {
-  constructor(private url: string, private token: string) {}
+  constructor(private url: string, private token: string) { }
 
   private async command<T>(args: (string | number)[]): Promise<T> {
     if (!this.url || !this.token) return null as T;
@@ -77,7 +77,7 @@ export class StateService {
 }
 
 export class MemoryService {
-  constructor(private apiKey: string) {}
+  constructor(private apiKey: string) { }
 
   async searchMemories(userId: string, query: string): Promise<string[]> {
     if (!this.apiKey) return [];
@@ -226,8 +226,8 @@ export class GeminiService {
   private async routeComplexity(userMessage: string): Promise<RouteDecision> {
     const trimmed = userMessage.trim();
 
-    if (/升級|upgrade|新增功能|加一個|修改功能|刪除功能|移除功能|插件|進度|https?:\/\//i.test(trimmed)) {
-      return { tier: 'medium', needsTools: true, reason: '偵測到自我升級或工具指令' };
+    if (/升級|upgrade|新增功能|加一個|修改功能|刪除功能|移除功能|插件|進度|介面|ui|外觀|配色|主題|排版|按鈕|畫面|https?:\/\//i.test(trimmed)) {
+      return { tier: 'medium', needsTools: true, reason: '偵測到自我升級、UI 調整或工具指令' };
     }
 
     if (trimmed.length <= 12 && !/幾點|時間|待辦|提醒|記下|查|code|程式/i.test(trimmed)) {
