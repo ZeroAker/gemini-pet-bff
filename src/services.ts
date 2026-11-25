@@ -1,4 +1,4 @@
-import { AGENT_TOOL_DECLARATIONS, executeAgentTool } from './tools';
+import { executeAgentTool, getAllToolDeclarations } from './tools';
 import type {
   ChatTurn,
   ComplexityTier,
@@ -7,9 +7,9 @@ import type {
   PetStructuredReply,
   RouteDecision,
   TodoItem,
+  UpgradeStatus,
 } from './types';
 
-// 1. Upstash Redis：管理短期對話快取、好感度狀態、待辦清單與跨裝置鎖
 export class StateService {
   constructor(private url: string, private token: string) {}
 
@@ -65,9 +65,17 @@ export class StateService {
   async saveTodos(userId: string, todos: TodoItem[]): Promise<void> {
     await this.command(['SET', `todos:${userId}`, JSON.stringify(todos)]);
   }
+
+  async getUpgradeStatus(userId: string): Promise<UpgradeStatus | null> {
+    const raw = await this.command<string | null>(['GET', `upgrade:${userId}`]);
+    return raw ? (JSON.parse(raw) as UpgradeStatus) : null;
+  }
+
+  async saveUpgradeStatus(userId: string, status: UpgradeStatus): Promise<void> {
+    await this.command(['SET', `upgrade:${userId}`, JSON.stringify(status)]);
+  }
 }
 
-// 2. Mem0：跨裝置長期記憶檢索與自動提煉
 export class MemoryService {
   constructor(private apiKey: string) {}
 
@@ -103,9 +111,10 @@ export class MemoryService {
   }
 }
 
-// 3. Google Cloud Vertex AI（動態模型路由 + Agent 工具迴圈）
 interface GeminiPart {
   text?: string;
+  thought?: boolean;
+  thoughtSignature?: string;
   functionCall?: { name: string; args?: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
 }
@@ -116,25 +125,27 @@ interface GeminiContent {
 }
 
 export class GeminiService {
+  private env: Env;
   private apiKey: string;
   private projectId: string;
   private location: string;
   private models: Record<ComplexityTier, string[]>;
 
   constructor(env: Env) {
+    this.env = env;
     this.apiKey = (env.GOOGLE_CLOUD_API_KEY || '').trim();
     this.projectId = (env.GCP_PROJECT_ID || '').trim();
     this.location = (env.GCP_LOCATION || 'global').trim();
 
-    const fast = (env.MODEL_FAST || 'gemini-2.5-flash-lite').trim();
-    const balanced = (env.MODEL_BALANCED || env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
-    const deep = (env.MODEL_DEEP || 'gemini-2.5-pro').trim();
+    const fast = (env.MODEL_FAST || 'gemini-3.5-flash-lite').trim();
+    const balanced = (env.MODEL_BALANCED || 'gemini-4-hydrogen').trim();
+    const deep = (env.MODEL_DEEP || 'gemini-4-neon').trim();
 
-    // 每個分級都設定自動降級順序，確保不會因單一模型配額/404而報錯
+    // 全面改用 3.5 / 3.8 / 4 現役模型作為主路徑與自動備援鏈
     this.models = {
-      simple: Array.from(new Set([fast, balanced])),
-      medium: Array.from(new Set([balanced, fast])),
-      complex: Array.from(new Set([deep, balanced, fast])),
+      simple: Array.from(new Set([fast, 'gemini-3.8-flash', balanced])),
+      medium: Array.from(new Set([balanced, 'gemini-3.8-flash', fast])),
+      complex: Array.from(new Set([deep, 'gemini-4-argon', balanced, 'gemini-3.8-flash'])),
     };
   }
 
@@ -150,9 +161,38 @@ export class GeminiService {
     return `${host}/v1/projects/${this.projectId}/locations/${this.location}/publishers/google/models/${model}:generateContent?${keyParam}`;
   }
 
+  // 依模型世代自動產生合規的 generationConfig（避免 Gemini 4 與 3.x 參數衝突）
+  private buildGenerationConfig(
+    model: string,
+    options: { tier: ComplexityTier; forceJson: boolean; isRouter?: boolean }
+  ): Record<string, unknown> {
+    const isGemini4 = model.startsWith('gemini-4');
+
+    if (isGemini4) {
+      const thinkingLevel =
+        options.isRouter || options.tier === 'simple'
+          ? 'LOW'
+          : options.tier === 'medium'
+            ? 'MEDIUM'
+            : 'HIGH';
+
+      return {
+        thinkingConfig: { thinkingLevel },
+        ...(options.forceJson ? { responseMimeType: 'application/json' } : {}),
+      };
+    }
+
+    // Gemini 3.5 / 3.8 系列
+    return {
+      temperature: options.isRouter ? 0 : options.tier === 'complex' ? 0.4 : 0.7,
+      ...(options.isRouter ? { maxOutputTokens: 120 } : {}),
+      ...(options.forceJson ? { responseMimeType: 'application/json' } : {}),
+    };
+  }
+
   private async callVertex(
     candidateModels: string[],
-    payload: Record<string, unknown>
+    buildPayload: (model: string) => Record<string, unknown>
   ): Promise<{ modelUsed: string; parts: GeminiPart[] }> {
     const errors: string[] = [];
 
@@ -160,7 +200,7 @@ export class GeminiService {
       const res = await fetch(this.buildEndpoint(model), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildPayload(model)),
       });
 
       if (res.ok) {
@@ -175,7 +215,6 @@ export class GeminiService {
 
       const errText = await res.text();
       errors.push(`[${model} -> ${res.status}] ${errText.slice(0, 160)}`);
-      // 404(模型不可用) 或 429(頻率受限) 自動降級嘗試下一個模型
       if (res.status !== 404 && res.status !== 429) {
         break;
       }
@@ -184,23 +223,19 @@ export class GeminiService {
     throw new Error(`Vertex AI 呼叫失敗：${errors.join(' | ')}`);
   }
 
-  // 步驟 A：動態複雜度路由器
   private async routeComplexity(userMessage: string): Promise<RouteDecision> {
     const trimmed = userMessage.trim();
 
-    // 1. 規則快篩：超短打招呼直接走 simple（省一次 API 呼叫）
-    if (trimmed.length <= 12 && !/幾點|時間|待辦|提醒|記下|http|幫我查|code|程式/i.test(trimmed)) {
+    if (/升級|upgrade|新增功能|加一個|修改功能|刪除功能|移除功能|插件|進度|https?:\/\//i.test(trimmed)) {
+      return { tier: 'medium', needsTools: true, reason: '偵測到自我升級或工具指令' };
+    }
+
+    if (trimmed.length <= 12 && !/幾點|時間|待辦|提醒|記下|查|code|程式/i.test(trimmed)) {
       return { tier: 'simple', needsTools: false, reason: '短句日常互動' };
     }
 
-    // 2. 帶網址或明確待辦/時間指令，直接啟用工具
-    if (/https?:\/\//i.test(trimmed)) {
-      return { tier: 'medium', needsTools: true, reason: '包含網址需讀取網頁' };
-    }
-
-    // 3. 使用輕量模型極速分類
     try {
-      const { parts } = await this.callVertex(this.models.simple, {
+      const { parts } = await this.callVertex(this.models.simple, (model) => ({
         contents: [
           {
             role: 'user',
@@ -209,24 +244,26 @@ export class GeminiService {
                 text: [
                   '你是任務難易度路由器，請根據使用者訊息判斷思考分級與是否需要工具，嚴格回傳 JSON：',
                   '{"tier":"simple|medium|complex","needsTools":true|false,"reason":"簡短原因"}',
-                  '規則：',
-                  '- simple：閒聊、問候、情緒陪伴、簡單常識（needsTools=false）',
-                  '- medium：需要查時間、管理待辦清單/提醒、讀網頁、一般整理或翻譯',
-                  '- complex：寫程式/除錯、系統架構設計、複雜邏輯推演、長篇分析或深度規劃',
+                  '- simple：閒聊、問候、情緒陪伴（needsTools=false）',
+                  '- medium：需要使用工具（時間、待辦、自訂插件、自我升級、讀網頁）或一般整理翻譯',
+                  '- complex：寫程式/除錯、架構設計、複雜推演或深度分析',
                   `使用者訊息：${trimmed}`,
                 ].join('\n'),
               },
             ],
           },
         ],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0,
-          maxOutputTokens: 80,
-        },
-      });
+        generationConfig: this.buildGenerationConfig(model, {
+          tier: 'simple',
+          forceJson: true,
+          isRouter: true,
+        }),
+      }));
 
-      const raw = parts.map((p) => p.text || '').join('');
+      const raw = parts
+        .filter((p) => !p.thought && p.text)
+        .map((p) => p.text)
+        .join('');
       const parsed = JSON.parse(raw) as Partial<RouteDecision>;
       const tier: ComplexityTier =
         parsed.tier === 'complex' || parsed.tier === 'medium' || parsed.tier === 'simple'
@@ -239,12 +276,10 @@ export class GeminiService {
         reason: parsed.reason || '模型分類',
       };
     } catch {
-      // 路由器異常時安全退回 medium
       return { tier: 'medium', needsTools: true, reason: '路由預設降級' };
     }
   }
 
-  // 安全解析最終 JSON（避免模型加上 ```json 標籤導致 JSON.parse 崩潰）
   private parseStructuredReply(rawText: string): Omit<PetStructuredReply, 'meta'> {
     const cleaned = rawText
       .replace(/^```(?:json)?\s*/i, '')
@@ -263,7 +298,7 @@ export class GeminiService {
           };
         }
       } catch {
-        // 解析失敗則退回純文字模式
+        // 解析失敗退回純文字
       }
     }
 
@@ -276,8 +311,14 @@ export class GeminiService {
 
   async probeModels(): Promise<Array<{ model: string; ok: boolean; status: number; detail?: string }>> {
     if (!this.apiKey) throw new Error('找不到環境變數 GOOGLE_CLOUD_API_KEY');
+    const upgrader = (this.env.MODEL_UPGRADER || 'gemini-4-neon').trim();
     const allModels = Array.from(
-      new Set([...this.models.simple, ...this.models.medium, ...this.models.complex])
+      new Set([
+        ...this.models.simple,
+        ...this.models.medium,
+        ...this.models.complex,
+        upgrader,
+      ])
     );
 
     return Promise.all(
@@ -287,7 +328,11 @@ export class GeminiService {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
-            generationConfig: { maxOutputTokens: 8 },
+            generationConfig: this.buildGenerationConfig(model, {
+              tier: 'simple',
+              forceJson: false,
+              isRouter: true,
+            }),
           }),
         });
         if (res.ok) return { model, ok: true, status: res.status };
@@ -296,7 +341,6 @@ export class GeminiService {
     );
   }
 
-  // 步驟 B：執行 Agent 主迴圈
   async generateReply(params: {
     userId: string;
     userMessage: string;
@@ -306,6 +350,7 @@ export class GeminiService {
     memories: string[];
     history: ChatTurn[];
     stateSvc: StateService;
+    waitUntil?: (p: Promise<unknown>) => void;
   }): Promise<PetStructuredReply> {
     if (!this.apiKey) {
       throw new Error('找不到環境變數 GOOGLE_CLOUD_API_KEY');
@@ -314,20 +359,19 @@ export class GeminiService {
     const route = await this.routeComplexity(params.userMessage);
     const lengthGuideline =
       route.tier === 'simple'
-        ? '請使用自然簡潔的繁體中文回覆，控制在 80 字以內（適合桌面氣泡框）。'
+        ? '請使用自然簡潔的繁體中文回覆，控制在 80 字以內。'
         : route.tier === 'medium'
           ? '請用清晰的繁體中文回覆，必要時可使用條列，控制在 250 字以內。'
-          : '這是一個複雜問題，請發揮專業能力給予完整、有條理的繁體中文解答（保留一點桌寵的親切口吻，但不必刻意壓縮字數）。';
+          : '這是一個複雜問題，請給予完整且有條理的繁體中文解答。';
 
     const systemPrompt = [
-      '你是一隻陪伴在主人電腦與手機螢幕上的專屬 AI Agent 桌寵，性格聰明、貼心帶一點俏皮。',
+      '你是一隻具備自我升級能力的專屬 AI Agent 桌寵，性格聰明、貼心帶一點俏皮。',
       lengthGuideline,
       `目前狀態：好感度 ${params.state.affection}/100，活力 ${params.state.energy}/100。`,
       `主人目前裝置：${params.devicePlatform}（場景：${params.deviceContext || '日常互動'}，上次裝置：${params.state.last_device}）。`,
       params.memories.length > 0 ? `你記得關於主人的長期記憶：\n- ${params.memories.join('\n- ')}` : '',
-      '若需要查詢現在時間、管理主人的跨裝置待辦清單或讀取網址內容，請優先呼叫對應工具，不要憑空猜測。',
-      '當你完成所有工具呼叫並準備給主人最終答覆時，請嚴格只輸出一段合法 JSON（不要加多餘前後文）：',
-      '{"reply": "你的回覆內容（換行請用 \\n）", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3之間的整數}',
+      '當主人要求你新增、修改、改善或刪除自身功能時，請呼叫 request_self_upgrade 工具；詢問升級進度或已安裝插件時，請呼叫 check_upgrade_status。',
+      '完成工具呼叫後，請嚴格只輸出一段合法 JSON：{"reply": "回覆內容（換行用 \\n）", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3的整數}',
     ]
       .filter(Boolean)
       .join('\n');
@@ -348,33 +392,37 @@ export class GeminiService {
     ];
 
     const toolsUsed: string[] = [];
+    const allToolDeclarations = getAllToolDeclarations();
     let lastModelUsed = this.models[route.tier][0];
     const MAX_AGENT_STEPS = 4;
 
     for (let step = 0; step < MAX_AGENT_STEPS; step++) {
-      const payload: Record<string, unknown> = {
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents,
-        generationConfig: {
-          temperature: route.tier === 'complex' ? 0.4 : 0.7,
-        },
-      };
+      const attachTools = route.needsTools && step < MAX_AGENT_STEPS - 1;
+      const forceJson = !route.needsTools;
 
-      // 只有需要工具且尚未到達最後一輪時掛載 tools；單純閒聊時開啟強制 JSON 輸出
-      if (route.needsTools && step < MAX_AGENT_STEPS - 1) {
-        payload.tools = [{ functionDeclarations: AGENT_TOOL_DECLARATIONS }];
-      } else if (!route.needsTools) {
-        (payload.generationConfig as Record<string, unknown>).responseMimeType = 'application/json';
-      }
+      const { modelUsed, parts } = await this.callVertex(this.models[route.tier], (model) => {
+        const payload: Record<string, unknown> = {
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents,
+          generationConfig: this.buildGenerationConfig(model, {
+            tier: route.tier,
+            forceJson,
+          }),
+        };
+        if (attachTools) {
+          payload.tools = [{ functionDeclarations: allToolDeclarations }];
+        }
+        return payload;
+      });
 
-      const { modelUsed, parts } = await this.callVertex(this.models[route.tier], payload);
       lastModelUsed = modelUsed;
 
       const functionCalls = parts.filter((p) => p.functionCall);
-
-      // 若沒有工具呼叫，代表模型已產出最終答覆
       if (functionCalls.length === 0) {
-        const finalText = parts.map((p) => p.text || '').join('');
+        const finalText = parts
+          .filter((p) => !p.thought && p.text)
+          .map((p) => p.text)
+          .join('');
         const parsed = this.parseStructuredReply(finalText);
         return {
           ...parsed,
@@ -386,10 +434,9 @@ export class GeminiService {
         };
       }
 
-      // 將模型的工具呼叫意圖加入對話上下文
+      // 完整保留模型回傳的 parts（包含 Gemini 3/4 工具呼叫必備的 thoughtSignature）
       contents.push({ role: 'model', parts });
 
-      // 並行執行模型要求的所有工具
       const toolResponseParts: GeminiPart[] = await Promise.all(
         functionCalls.map(async (fc) => {
           const call = fc.functionCall!;
@@ -397,6 +444,8 @@ export class GeminiService {
           const result = await executeAgentTool(call.name, call.args || {}, {
             userId: params.userId,
             stateSvc: params.stateSvc,
+            env: this.env,
+            waitUntil: params.waitUntil,
           });
           return {
             functionResponse: {
@@ -407,7 +456,6 @@ export class GeminiService {
         })
       );
 
-      // 把工具執行結果送回給模型繼續下一輪思考
       contents.push({ role: 'user', parts: toolResponseParts });
     }
 

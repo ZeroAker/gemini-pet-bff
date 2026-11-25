@@ -36,7 +36,6 @@ app.get('/test-models', async (c) => {
   }
 });
 
-// 支援用 ?q=... 直接在手機瀏覽器測試動態路由與 Agent 工具
 app.get('/test-gemini', async (c) => {
   try {
     const q = c.req.query('q') || '打個招呼';
@@ -50,6 +49,7 @@ app.get('/test-gemini', async (c) => {
       memories: [],
       history: [],
       stateSvc,
+      waitUntil: (p) => c.executionCtx.waitUntil(p),
     });
     return c.json({ ok: true, query: q, result: res });
   } catch (err) {
@@ -96,6 +96,7 @@ app.post('/v1/pet/interact', async (c) => {
       memories,
       history,
       stateSvc,
+      waitUntil: (p) => c.executionCtx.waitUntil(p),
     });
 
     const nextState = {

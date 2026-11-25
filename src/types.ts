@@ -6,6 +6,11 @@ export interface Env {
   MODEL_FAST?: string;
   MODEL_BALANCED?: string;
   MODEL_DEEP?: string;
+  MODEL_UPGRADER?: string;
+  GITHUB_TOKEN?: string;
+  GITHUB_OWNER?: string;
+  GITHUB_REPO?: string;
+  GITHUB_BRANCH?: string;
   UPSTASH_REDIS_REST_URL: string;
   UPSTASH_REDIS_REST_TOKEN: string;
   MEM0_API_KEY: string;
@@ -60,4 +65,31 @@ export interface TodoItem {
   text: string;
   done: boolean;
   created_at: string;
+}
+
+// 自我升級狀態記錄（存於 Upstash Redis）
+export interface UpgradeStatus {
+  status: 'running' | 'pr_created' | 'rejected' | 'failed';
+  request: string;
+  summary?: string;
+  pr_url?: string;
+  changed_files?: string[];
+  error?: string;
+  updated_at: string;
+}
+
+// 核心與插件共用的工具介面規範
+export interface ToolDeclaration {
+  name: string;
+  description: string;
+  parameters: {
+    type: 'OBJECT';
+    properties: Record<string, { type: string; description: string }>;
+    required?: string[];
+  };
+}
+
+export interface PluginTool {
+  declaration: ToolDeclaration;
+  execute: (args: Record<string, unknown>, ctx: { userId: string }) => Promise<Record<string, unknown>>;
 }
