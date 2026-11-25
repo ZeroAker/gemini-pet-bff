@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { GeminiService, MemoryService, StateService } from './services';
 import type { Env, InteractRequest } from './types';
+import { CHAT_HTML } from './ui';
 
 const app = new Hono<{ Bindings: Env }>();
+app.get('/', (c) => c.html(CHAT_HTML));
 
 app.onError((err, c) => {
   return c.json(
