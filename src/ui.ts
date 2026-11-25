@@ -200,6 +200,11 @@ export const CHAT_HTML = `<!DOCTYPE html>
       return 'android';
     }
 
+    function isMobileTouchDevice() {
+      const ua = navigator.userAgent || '';
+      return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    }
+
     function getConfig() {
       return {
         token: localStorage.getItem('pet_bff_token') || '',
@@ -429,6 +434,28 @@ export const CHAT_HTML = `<!DOCTYPE html>
     inputEl.addEventListener('input', function () {
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+    });
+
+    let isImeComposing = false;
+    let lastCompositionEndAt = 0;
+    inputEl.addEventListener('compositionstart', function () {
+      isImeComposing = true;
+    });
+    inputEl.addEventListener('compositionend', function () {
+      isImeComposing = false;
+      lastCompositionEndAt = Date.now();
+    });
+    inputEl.addEventListener('keydown', function (e) {
+      if (isMobileTouchDevice()) return;
+      if (e.isComposing || isImeComposing || e.keyCode === 229 || (Date.now() - lastCompositionEndAt < 50)) {
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        if (!sendBtn.disabled) {
+          sendMessage();
+        }
+      }
     });
 
     // 初始化載入本地畫面紀錄
