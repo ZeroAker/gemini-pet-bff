@@ -6,7 +6,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
   <meta name="theme-color" content="#0f111a" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>Gemini 桌寵</title>
-  <style>
+  <style id="ui-styles">
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -35,10 +35,15 @@ export const CHAT_HTML = `<!DOCTYPE html>
     }
     .title { font-size: 15px; font-weight: 600; }
     .stats { font-size: 12px; color: #9aa3bd; margin-top: 2px; }
-    .header-actions { display: flex; gap: 6px; align-items: center; }
+    .header-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
     .btn-icon {
       background: #23283a; color: #cfd5e6; border: 1px solid #323952;
       border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer;
+    }
+    .btn-icon:hover { border-color: #6c5ce7; color: #fff; }
+    .btn-primary {
+      background: #6c5ce7; color: #fff; border: none;
+      border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
     }
     #upgradeBar {
       display: none;
@@ -55,6 +60,29 @@ export const CHAT_HTML = `<!DOCTYPE html>
       gap: 8px;
       margin-bottom: 6px;
     }
+    #proactiveBubble {
+      display: none;
+      background: linear-gradient(135deg, #1e2238, #252b48);
+      border-bottom: 1px solid #48548a;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #f1f2f8;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+    }
+    #proactiveBubble.show { display: flex; }
+    .proactive-bubble-body { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+    .proactive-bubble-icon {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: rgba(108, 92, 231, 0.28); border: 1px solid #7c6ff7;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 16px;
+    }
+    .proactive-bubble-content { flex: 1; min-width: 0; }
+    .proactive-bubble-title { font-size: 12px; font-weight: 600; color: #a29bfe; margin-bottom: 2px; }
+    .proactive-bubble-text { font-size: 13px; color: #e6e8f0; word-break: break-word; }
+    .proactive-bubble-actions { display: flex; gap: 6px; flex-shrink: 0; }
     #chat {
       flex: 1;
       overflow-y: auto;
@@ -77,13 +105,8 @@ export const CHAT_HTML = `<!DOCTYPE html>
       gap: 4px;
       min-width: 60px;
     }
-    .bubble.has-time {
-      padding-bottom: 7px;
-    }
-    .bubble-text {
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
+    .bubble.has-time { padding-bottom: 7px; }
+    .bubble-text { white-space: pre-wrap; word-break: break-word; }
     .bubble-time {
       font-size: 11px;
       line-height: 1.1;
@@ -127,20 +150,52 @@ export const CHAT_HTML = `<!DOCTYPE html>
     #sendBtn:disabled { opacity: 0.5; cursor: not-allowed; }
     .modal {
       position: fixed; inset: 0; background: rgba(0, 0, 0, 0.72);
-      display: none; align-items: center; justify-content: center; padding: 20px; z-index: 99;
+      display: none; align-items: center; justify-content: center; padding: 16px; z-index: 99;
     }
     .modal.open { display: flex; }
     .modal-card {
       background: #171a26; border: 1px solid #2f3650; border-radius: 14px;
       width: 100%; max-width: 360px; padding: 18px; display: flex; flex-direction: column; gap: 12px;
+      max-height: 88dvh; overflow-y: auto;
     }
+    .modal-card.wide { max-width: 460px; }
     .modal-card h3 { font-size: 16px; }
     .modal-card label { font-size: 12px; color: #9aa3bd; display: block; margin-bottom: 4px; }
-    .modal-card input {
+    .modal-card input, .modal-card select {
       width: 100%; background: #0f111a; color: #fff; border: 1px solid #2f3650;
-      border-radius: 8px; padding: 10px; font-size: 14px; outline: none;
+      border-radius: 8px; padding: 9px 10px; font-size: 13px; outline: none;
     }
-    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; flex-wrap: wrap; }
+    .proactive-top-row {
+      display: flex; align-items: center; justify-content: space-between;
+      background: #121521; border: 1px solid #282f47; border-radius: 10px; padding: 10px 12px;
+    }
+    .proactive-form {
+      background: #121521; border: 1px solid #282f47; border-radius: 10px;
+      padding: 12px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .proactive-form-row { display: flex; gap: 8px; }
+    .proactive-form-row > div { flex: 1; }
+    .rule-list { display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; }
+    .rule-item {
+      background: #121521; border: 1px solid #282f47; border-radius: 10px;
+      padding: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .rule-item.disabled { opacity: 0.55; }
+    .rule-info { flex: 1; min-width: 0; }
+    .rule-title-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; flex-wrap: wrap; }
+    .rule-name { font-size: 13px; font-weight: 600; color: #e6e8f0; }
+    .rule-badge {
+      font-size: 11px; padding: 1px 6px; border-radius: 6px;
+      background: #252b42; color: #a29bfe; border: 1px solid #384166;
+    }
+    .rule-msg { font-size: 12px; color: #9aa3bd; word-break: break-word; }
+    .rule-actions { display: flex; gap: 5px; flex-shrink: 0; }
+    .btn-sm {
+      background: #23283a; color: #cfd5e6; border: 1px solid #323952;
+      border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer;
+    }
+    .btn-sm.danger { color: #ff7675; border-color: #5c2b33; }
   </style>
 </head>
 <body>
@@ -153,10 +208,12 @@ export const CHAT_HTML = `<!DOCTYPE html>
       </div>
     </div>
     <div class="header-actions">
+      <button class="btn-icon" id="proactiveBtn">🔔 主動關懷</button>
       <button class="btn-icon" id="upgradeBtn">升級進度</button>
       <button class="btn-icon" id="settingsBtn">設定</button>
     </div>
   </header>
+
   <div id="upgradeBar">
     <div class="upgrade-header">
       <strong id="upgradeTitle">🔄 升級進度追蹤中...</strong>
@@ -165,6 +222,21 @@ export const CHAT_HTML = `<!DOCTYPE html>
     <pre id="upgradeLogs" style="white-space:pre-wrap;font-family:monospace;color:#9aa3bd;max-height:120px;overflow-y:auto;line-height:1.4;"></pre>
     <div id="upgradeLink" style="margin-top:6px;"></div>
   </div>
+
+  <div id="proactiveBubble">
+    <div class="proactive-bubble-body">
+      <div class="proactive-bubble-icon">🐾</div>
+      <div class="proactive-bubble-content">
+        <div class="proactive-bubble-title" id="proactiveBubbleTitle">主動關懷提醒</div>
+        <div class="proactive-bubble-text" id="proactiveBubbleText"></div>
+      </div>
+    </div>
+    <div class="proactive-bubble-actions">
+      <button class="btn-sm" id="proactiveReplyBtn">回覆</button>
+      <button class="btn-sm" id="proactiveCloseBtn">關閉</button>
+    </div>
+  </div>
+
   <main id="chat"></main>
 
   <footer>
@@ -186,13 +258,71 @@ export const CHAT_HTML = `<!DOCTYPE html>
       <div class="modal-actions">
         <button class="btn-icon" id="clearUiBtn">清空畫面</button>
         <button class="btn-icon" id="closeModalBtn">取消</button>
-        <button id="saveSettingsBtn" style="background:#6c5ce7;color:#fff;border:none;border-radius:8px;padding:6px 14px;cursor:pointer;">儲存</button>
+        <button class="btn-primary" id="saveSettingsBtn">儲存</button>
       </div>
     </div>
   </div>
 
-  <script>
-    const EMOJI_MAP = {
+  <div class="modal" id="proactiveModal">
+    <div class="modal-card wide">
+      <h3>🔔 主動訊息排程面板</h3>
+      <div class="proactive-top-row">
+        <div>
+          <div style="font-size:13px;font-weight:600;" id="proactiveGlobalLabel">主動關懷總開關：啟用中</div>
+          <div style="font-size:11px;color:#9aa3bd;" id="proactiveIdleInfo">每 30 秒自動檢查到期排程與閒置狀態</div>
+        </div>
+        <button class="btn-icon" id="toggleGlobalProactiveBtn">切換總開關</button>
+      </div>
+
+      <div class="proactive-form">
+        <div class="proactive-form-row">
+          <div>
+            <label>排程標題</label>
+            <input id="ruleTitleInput" type="text" placeholder="例如：喝水提醒" />
+          </div>
+          <div>
+            <label>類型</label>
+            <select id="ruleTypeSelect">
+              <option value="daily">每日固定時間 (daily)</option>
+              <option value="interval">固定間隔分鐘 (interval)</option>
+              <option value="idle">閒置觸發分鐘 (idle)</option>
+            </select>
+          </div>
+        </div>
+        <div class="proactive-form-row">
+          <div id="ruleTimeWrap">
+            <label>每日時間 (HH:mm)</label>
+            <input id="ruleTimeInput" type="text" value="09:00" placeholder="09:00" />
+          </div>
+          <div id="ruleIntervalWrap" style="display:none;">
+            <label>分鐘數 (正整數)</label>
+            <input id="ruleIntervalInput" type="number" min="1" max="10080" value="60" />
+          </div>
+        </div>
+        <div>
+          <label>提醒訊息內容</label>
+          <input id="ruleMsgInput" type="text" placeholder="主人～記得喝口水休息一下喔！" />
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:2px;">
+          <button class="btn-icon" id="testProactiveBubbleBtn">立即檢查到期</button>
+          <button class="btn-primary" id="addRuleBtn">＋ 新增排程</button>
+        </div>
+      </div>
+
+      <div>
+        <label style="margin-bottom:6px;">目前排程列表</label>
+        <div class="rule-list" id="proactiveRuleList"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-icon" id="syncProactiveCloudBtn">☁️ 同步至雲端工具</button>
+        <button class="btn-icon" id="closeProactiveModalBtn">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <script id="scripts-core">
+    var EMOJI_MAP = {
       idle: '🐱',
       happy: '😸',
       thinking: '🤔',
@@ -200,24 +330,29 @@ export const CHAT_HTML = `<!DOCTYPE html>
       caring: '🥰'
     };
 
-    const chatEl = document.getElementById('chat');
-    const inputEl = document.getElementById('input');
-    const sendBtn = document.getElementById('sendBtn');
-    const petEmojiEl = document.getElementById('petEmoji');
-    const petStatsEl = document.getElementById('petStats');
-    const modalEl = document.getElementById('settingsModal');
-    const tokenInput = document.getElementById('tokenInput');
-    const uidInput = document.getElementById('uidInput');
+    var chatEl = document.getElementById('chat');
+    var inputEl = document.getElementById('input');
+    var sendBtn = document.getElementById('sendBtn');
+    var petEmojiEl = document.getElementById('petEmoji');
+    var petStatsEl = document.getElementById('petStats');
+    var modalEl = document.getElementById('settingsModal');
+    var tokenInput = document.getElementById('tokenInput');
+    var uidInput = document.getElementById('uidInput');
+    var lastUserActivityAt = Date.now();
+
+    function markUserActivity() {
+      lastUserActivityAt = Date.now();
+    }
 
     function detectPlatform() {
-      const ua = navigator.userAgent || '';
+      var ua = navigator.userAgent || '';
       if (/Mac/i.test(ua) && !/Android/i.test(ua)) return 'macos';
       if (/Windows/i.test(ua)) return 'windows';
       return 'android';
     }
 
     function isMobileTouchDevice() {
-      const ua = navigator.userAgent || '';
+      var ua = navigator.userAgent || '';
       return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
     }
 
@@ -245,28 +380,28 @@ export const CHAT_HTML = `<!DOCTYPE html>
       if (typeof ts === 'string' && ts.length === 5 && ts.charAt(2) === ':') {
         return ts;
       }
-      const d = new Date(ts);
+      var d = new Date(ts);
       if (isNaN(d.getTime())) return '';
-      const hh = String(d.getHours()).padStart(2, '0');
-      const mm = String(d.getMinutes()).padStart(2, '0');
+      var hh = String(d.getHours()).padStart(2, '0');
+      var mm = String(d.getMinutes()).padStart(2, '0');
       return hh + ':' + mm;
     }
 
     function renderMessage(role, text, metaText, timestamp) {
-      const wrap = document.createElement('div');
+      var wrap = document.createElement('div');
       wrap.className = 'msg ' + role;
-      const bubble = document.createElement('div');
+      var bubble = document.createElement('div');
       bubble.className = 'bubble';
 
-      const textEl = document.createElement('div');
+      var textEl = document.createElement('div');
       textEl.className = 'bubble-text';
       textEl.textContent = text;
       bubble.appendChild(textEl);
 
-      const timeStr = formatTime(timestamp);
+      var timeStr = formatTime(timestamp);
       if (timeStr) {
         bubble.classList.add('has-time');
-        const timeEl = document.createElement('div');
+        var timeEl = document.createElement('div');
         timeEl.className = 'bubble-time';
         timeEl.textContent = timeStr;
         bubble.appendChild(timeEl);
@@ -274,7 +409,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
 
       wrap.appendChild(bubble);
       if (metaText) {
-        const meta = document.createElement('div');
+        var meta = document.createElement('div');
         meta.className = 'meta';
         meta.textContent = metaText;
         wrap.appendChild(meta);
@@ -285,7 +420,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
     }
 
     function openSettings() {
-      const cfg = getConfig();
+      var cfg = getConfig();
       tokenInput.value = cfg.token;
       uidInput.value = cfg.uid;
       modalEl.classList.add('open');
@@ -305,69 +440,76 @@ export const CHAT_HTML = `<!DOCTYPE html>
       localStorage.setItem('pet_user_id', uidInput.value.trim() || 'zero_main');
       modalEl.classList.remove('open');
     };
+  </script>
+
+  <script id="scripts-chat">
+    async function sendInteractionRequest(contentText, contextLabel) {
+      var cfg = getConfig();
+      var res = await fetch('/v1/pet/interact', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + cfg.token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          user_id: cfg.uid,
+          device: {
+            platform: detectPlatform(),
+            context: contextLabel || 'PWA 專屬介面'
+          },
+          input: {
+            type: 'text',
+            content: contentText
+          }
+        })
+      });
+      return await res.json();
+    }
 
     async function sendMessage() {
-      const text = inputEl.value.trim();
+      var text = inputEl.value.trim();
       if (!text) return;
 
-      const cfg = getConfig();
+      var cfg = getConfig();
       if (!cfg.token) {
         openSettings();
         return;
       }
 
+      markUserActivity();
       inputEl.value = '';
       inputEl.style.height = 'auto';
       sendBtn.disabled = true;
 
-      const userTime = Date.now();
-      const log = loadLocalLog();
+      var userTime = Date.now();
+      var log = loadLocalLog();
       log.push({ role: 'user', text: text, meta: '', time: userTime });
       saveLocalLog(log);
       renderMessage('user', text, '', userTime);
 
-      const loadingEl = renderMessage('bot', '思考中...', '', null);
+      var loadingEl = renderMessage('bot', '思考中...', '', null);
 
       try {
-        const res = await fetch('/v1/pet/interact', {
-          method: 'POST',
-          headers: {
-            'Authorization': 'Bearer ' + cfg.token,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            user_id: cfg.uid,
-            device: {
-              platform: detectPlatform(),
-              context: 'PWA 專屬介面'
-            },
-            input: {
-              type: 'text',
-              content: text
-            }
-          })
-        });
-
-        const data = await res.json();
+        var data = await sendInteractionRequest(text, 'PWA 專屬介面');
         loadingEl.remove();
 
-        const reply = data.reply || JSON.stringify(data);
-        const emotion = (data.action && data.action.emotion) ? data.action.emotion : 'idle';
+        var reply = data.reply || JSON.stringify(data);
+        var emotion = (data.action && data.action.emotion) ? data.action.emotion : 'idle';
         petEmojiEl.textContent = EMOJI_MAP[emotion] || '🐱';
 
         if (data.pet_state) {
           petStatsEl.textContent = '好感度 ' + data.pet_state.affection + ' ｜ 活力 ' + data.pet_state.energy;
         }
 
-        const metaParts = [];
+        var metaParts = [];
         if (data.meta && data.meta.model_used) metaParts.push(data.meta.model_used);
         if (data.meta && data.meta.tools_used && data.meta.tools_used.length > 0) {
           metaParts.push('工具: ' + data.meta.tools_used.join(', '));
         }
-        const metaStr = metaParts.join(' · ');
+        var metaStr = metaParts.join(' · ');
 
-        const botTime = Date.now();
-        const updatedLog = loadLocalLog();
+        var botTime = Date.now();
+        var updatedLog = loadLocalLog();
         updatedLog.push({ role: 'bot', text: reply, meta: metaStr, time: botTime });
         saveLocalLog(updatedLog);
         renderMessage('bot', reply, metaStr, botTime);
@@ -379,11 +521,12 @@ export const CHAT_HTML = `<!DOCTYPE html>
         inputEl.focus();
       }
     }
-    let pollTimer = null;
-    const upgradeBar = document.getElementById('upgradeBar');
-    const upgradeTitle = document.getElementById('upgradeTitle');
-    const upgradeLogs = document.getElementById('upgradeLogs');
-    const upgradeLink = document.getElementById('upgradeLink');
+
+    var pollTimer = null;
+    var upgradeBar = document.getElementById('upgradeBar');
+    var upgradeTitle = document.getElementById('upgradeTitle');
+    var upgradeLogs = document.getElementById('upgradeLogs');
+    var upgradeLink = document.getElementById('upgradeLink');
 
     document.getElementById('closeUpgradeBar').onclick = function () {
       upgradeBar.style.display = 'none';
@@ -391,13 +534,13 @@ export const CHAT_HTML = `<!DOCTYPE html>
     };
 
     async function fetchUpgradeStatus() {
-      const cfg = getConfig();
+      var cfg = getConfig();
       if (!cfg.token) return;
       try {
-        const res = await fetch('/v1/pet/upgrade/status?uid=' + encodeURIComponent(cfg.uid), {
+        var res = await fetch('/v1/pet/upgrade/status?uid=' + encodeURIComponent(cfg.uid), {
           headers: { 'Authorization': 'Bearer ' + cfg.token }
         });
-        const st = await res.json();
+        var st = await res.json();
         upgradeBar.style.display = 'block';
 
         if (st.status === 'idle') {
@@ -423,17 +566,28 @@ export const CHAT_HTML = `<!DOCTYPE html>
           if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         }
 
-        upgradeLogs.textContent = (st.logs || []).join('\\n') + (st.error ? '\\n錯誤: ' + st.error : '');
+        var nl = String.fromCharCode(10);
+        upgradeLogs.textContent = (st.logs || []).join(nl) + (st.error ? nl + '錯誤: ' + st.error : '');
         upgradeLogs.scrollTop = upgradeLogs.scrollHeight;
 
-        const links = [];
+        upgradeLink.innerHTML = '';
         if (st.actions_url) {
-          links.push('<a href="' + st.actions_url + '" target="_blank" style="color:#74b9ff;margin-right:12px;">查看 Actions 即時終端日誌 ↗</a>');
+          var a1 = document.createElement('a');
+          a1.href = st.actions_url;
+          a1.target = '_blank';
+          a1.style.color = '#74b9ff';
+          a1.style.marginRight = '12px';
+          a1.textContent = '查看 Actions 即時終端日誌 ↗';
+          upgradeLink.appendChild(a1);
         }
         if (st.pr_url) {
-          links.push('<a href="' + st.pr_url + '" target="_blank" style="color:#a29bfe;">查看 PR 變更內容 ↗</a>');
+          var a2 = document.createElement('a');
+          a2.href = st.pr_url;
+          a2.target = '_blank';
+          a2.style.color = '#a29bfe';
+          a2.textContent = '查看 PR 變更內容 ↗';
+          upgradeLink.appendChild(a2);
         }
-        upgradeLink.innerHTML = links.join('');
       } catch (e) {
         upgradeTitle.textContent = '⚠️ 查詢進度失敗：' + e.message;
       }
@@ -448,12 +602,13 @@ export const CHAT_HTML = `<!DOCTYPE html>
     document.getElementById('upgradeBtn').onclick = startUpgradePolling;
     sendBtn.onclick = sendMessage;
     inputEl.addEventListener('input', function () {
+      markUserActivity();
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 120) + 'px';
     });
 
-    let isImeComposing = false;
-    let lastCompositionEndAt = 0;
+    var isImeComposing = false;
+    var lastCompositionEndAt = 0;
     inputEl.addEventListener('compositionstart', function () {
       isImeComposing = true;
     });
@@ -462,6 +617,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       lastCompositionEndAt = Date.now();
     });
     inputEl.addEventListener('keydown', function (e) {
+      markUserActivity();
       if (isMobileTouchDevice()) return;
       if (e.isComposing || isImeComposing || e.keyCode === 229 || (Date.now() - lastCompositionEndAt < 50)) {
         return;
@@ -474,8 +630,7 @@ export const CHAT_HTML = `<!DOCTYPE html>
       }
     });
 
-    // 初始化載入本地畫面紀錄
-    const initialLog = loadLocalLog();
+    var initialLog = loadLocalLog();
     if (initialLog.length === 0) {
       renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天囉。', '', Date.now());
     } else {
@@ -487,6 +642,339 @@ export const CHAT_HTML = `<!DOCTYPE html>
     if (!getConfig().token) {
       openSettings();
     }
+  </script>
+
+  <script id="scripts-proactive">
+    var PROACTIVE_STORAGE_KEY = 'pet_proactive_store_v1';
+    var proactiveModalEl = document.getElementById('proactiveModal');
+    var proactiveRuleListEl = document.getElementById('proactiveRuleList');
+    var proactiveGlobalLabelEl = document.getElementById('proactiveGlobalLabel');
+    var proactiveIdleInfoEl = document.getElementById('proactiveIdleInfo');
+    var ruleTypeSelectEl = document.getElementById('ruleTypeSelect');
+    var ruleTimeWrapEl = document.getElementById('ruleTimeWrap');
+    var ruleIntervalWrapEl = document.getElementById('ruleIntervalWrap');
+    var ruleTitleInputEl = document.getElementById('ruleTitleInput');
+    var ruleTimeInputEl = document.getElementById('ruleTimeInput');
+    var ruleIntervalInputEl = document.getElementById('ruleIntervalInput');
+    var ruleMsgInputEl = document.getElementById('ruleMsgInput');
+    var proactiveBubbleEl = document.getElementById('proactiveBubble');
+    var proactiveBubbleTitleEl = document.getElementById('proactiveBubbleTitle');
+    var proactiveBubbleTextEl = document.getElementById('proactiveBubbleText');
+    var activeBubbleRule = null;
+
+    function createDefaultProactiveStore() {
+      var nowIso = new Date().toISOString();
+      return {
+        globalEnabled: true,
+        rules: [
+          {
+            id: 'daily-morning',
+            title: '每日早安問候',
+            message: '早安主人！新的一天開始囉，今天有什麼計畫想跟我分享嗎？☀️',
+            scheduleType: 'daily',
+            time: '09:00',
+            intervalMinutes: 60,
+            enabled: true,
+            createdAt: nowIso,
+            lastTriggeredAt: null
+          },
+          {
+            id: 'idle-care',
+            title: '閒置關懷提醒',
+            message: '主人忙了好一陣子呢，記得站起來伸個懶腰、喝口水休息一下喔！🐾',
+            scheduleType: 'idle',
+            time: '00:00',
+            intervalMinutes: 120,
+            enabled: true,
+            createdAt: nowIso,
+            lastTriggeredAt: null
+          }
+        ]
+      };
+    }
+
+    function loadProactiveStore() {
+      try {
+        var raw = localStorage.getItem(PROACTIVE_STORAGE_KEY);
+        if (!raw) return createDefaultProactiveStore();
+        var parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.rules)) {
+          return createDefaultProactiveStore();
+        }
+        return parsed;
+      } catch (e) {
+        return createDefaultProactiveStore();
+      }
+    }
+
+    function saveProactiveStore(store) {
+      localStorage.setItem(PROACTIVE_STORAGE_KEY, JSON.stringify(store));
+    }
+
+    function formatScheduleBadge(rule) {
+      if (rule.scheduleType === 'daily') return '每日 ' + (rule.time || '09:00');
+      if (rule.scheduleType === 'interval') return '每 ' + (rule.intervalMinutes || 60) + ' 分鐘';
+      return '閒置 ' + (rule.intervalMinutes || 120) + ' 分鐘';
+    }
+
+    function renderProactivePanel() {
+      var store = loadProactiveStore();
+      proactiveGlobalLabelEl.textContent = '主動關懷總開關：' + (store.globalEnabled ? '🟢 啟用中' : '⚪ 已停用');
+      var idleMin = Math.floor((Date.now() - lastUserActivityAt) / 60000);
+      proactiveIdleInfoEl.textContent = '目前閒置約 ' + idleMin + ' 分鐘 ｜ 共 ' + store.rules.length + ' 筆排程';
+      proactiveRuleListEl.innerHTML = '';
+
+      if (store.rules.length === 0) {
+        var emptyEl = document.createElement('div');
+        emptyEl.style.fontSize = '12px';
+        emptyEl.style.color = '#8c96b2';
+        emptyEl.style.padding = '8px';
+        emptyEl.textContent = '目前尚無排程，可由上方表單新增。';
+        proactiveRuleListEl.appendChild(emptyEl);
+        return;
+      }
+
+      store.rules.forEach(function (rule) {
+        var item = document.createElement('div');
+        item.className = 'rule-item' + (rule.enabled ? '' : ' disabled');
+
+        var info = document.createElement('div');
+        info.className = 'rule-info';
+
+        var titleRow = document.createElement('div');
+        titleRow.className = 'rule-title-row';
+
+        var nameEl = document.createElement('span');
+        nameEl.className = 'rule-name';
+        nameEl.textContent = rule.title;
+
+        var badgeEl = document.createElement('span');
+        badgeEl.className = 'rule-badge';
+        badgeEl.textContent = formatScheduleBadge(rule);
+
+        titleRow.appendChild(nameEl);
+        titleRow.appendChild(badgeEl);
+
+        var msgEl = document.createElement('div');
+        msgEl.className = 'rule-msg';
+        msgEl.textContent = rule.message;
+
+        info.appendChild(titleRow);
+        info.appendChild(msgEl);
+
+        var actions = document.createElement('div');
+        actions.className = 'rule-actions';
+
+        var toggleBtn = document.createElement('button');
+        toggleBtn.className = 'btn-sm';
+        toggleBtn.textContent = rule.enabled ? '停用' : '啟用';
+        toggleBtn.onclick = function () {
+          toggleProactiveRule(rule.id);
+        };
+
+        var delBtn = document.createElement('button');
+        delBtn.className = 'btn-sm danger';
+        delBtn.textContent = '刪除';
+        delBtn.onclick = function () {
+          deleteProactiveRule(rule.id);
+        };
+
+        actions.appendChild(toggleBtn);
+        actions.appendChild(delBtn);
+
+        item.appendChild(info);
+        item.appendChild(actions);
+        proactiveRuleListEl.appendChild(item);
+      });
+    }
+
+    function toggleProactiveRule(ruleId) {
+      var store = loadProactiveStore();
+      store.rules.forEach(function (r) {
+        if (r.id === ruleId) r.enabled = !r.enabled;
+      });
+      saveProactiveStore(store);
+      renderProactivePanel();
+    }
+
+    function deleteProactiveRule(ruleId) {
+      var store = loadProactiveStore();
+      store.rules = store.rules.filter(function (r) { return r.id !== ruleId; });
+      saveProactiveStore(store);
+      renderProactivePanel();
+    }
+
+    function showProactiveNotification(rule) {
+      activeBubbleRule = rule;
+      proactiveBubbleTitleEl.textContent = '🔔 ' + (rule.title || '主動關懷提醒');
+      proactiveBubbleTextEl.textContent = rule.message || '';
+      proactiveBubbleEl.classList.add('show');
+      petEmojiEl.textContent = EMOJI_MAP.caring;
+
+      var nowTs = Date.now();
+      var metaLabel = '主動關懷 · ' + formatScheduleBadge(rule);
+      var log = loadLocalLog();
+      log.push({ role: 'bot', text: rule.message, meta: metaLabel, time: nowTs });
+      saveLocalLog(log);
+      renderMessage('bot', rule.message, metaLabel, nowTs);
+    }
+
+    function checkDueProactiveRules(forceTriggerFirst) {
+      var store = loadProactiveStore();
+      if (!store.globalEnabled) return false;
+
+      var now = new Date();
+      var nowMs = now.getTime();
+      var nowIso = now.toISOString();
+      var todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+      var nowMinutes = now.getHours() * 60 + now.getMinutes();
+      var idleMinutes = (nowMs - lastUserActivityAt) / 60000;
+      var triggeredRule = null;
+
+      for (var i = 0; i < store.rules.length; i++) {
+        var rule = store.rules[i];
+        if (!rule.enabled) continue;
+
+        if (forceTriggerFirst) {
+          triggeredRule = rule;
+          rule.lastTriggeredAt = nowIso;
+          break;
+        }
+
+        if (rule.scheduleType === 'daily') {
+          var parts = (rule.time || '09:00').split(':');
+          var targetMin = (parseInt(parts[0], 10) || 9) * 60 + (parseInt(parts[1], 10) || 0);
+          var diff = nowMinutes - targetMin;
+          var lastDateStr = '';
+          if (rule.lastTriggeredAt) {
+            var ld = new Date(rule.lastTriggeredAt);
+            if (!isNaN(ld.getTime())) {
+              lastDateStr = ld.getFullYear() + '-' + String(ld.getMonth() + 1).padStart(2, '0') + '-' + String(ld.getDate()).padStart(2, '0');
+            }
+          }
+          if (diff >= 0 && diff <= 120 && lastDateStr !== todayStr) {
+            triggeredRule = rule;
+            rule.lastTriggeredAt = nowIso;
+            break;
+          }
+        } else if (rule.scheduleType === 'interval') {
+          var intervalMs = (rule.intervalMinutes || 60) * 60000;
+          var refMs = Date.parse(rule.lastTriggeredAt || rule.createdAt || nowIso);
+          if (!isNaN(refMs) && (nowMs - refMs >= intervalMs)) {
+            triggeredRule = rule;
+            rule.lastTriggeredAt = nowIso;
+            break;
+          }
+        } else if (rule.scheduleType === 'idle') {
+          var needIdle = rule.intervalMinutes || 120;
+          var lastTrigMs = rule.lastTriggeredAt ? Date.parse(rule.lastTriggeredAt) : 0;
+          var cooldownOk = !lastTrigMs || isNaN(lastTrigMs) || (nowMs - lastTrigMs >= needIdle * 60000);
+          if (idleMinutes >= needIdle && cooldownOk) {
+            triggeredRule = rule;
+            rule.lastTriggeredAt = nowIso;
+            break;
+          }
+        }
+      }
+
+      if (triggeredRule) {
+        saveProactiveStore(store);
+        showProactiveNotification(triggeredRule);
+        return true;
+      }
+      return false;
+    }
+
+    ruleTypeSelectEl.onchange = function () {
+      var val = ruleTypeSelectEl.value;
+      if (val === 'daily') {
+        ruleTimeWrapEl.style.display = 'block';
+        ruleIntervalWrapEl.style.display = 'none';
+      } else {
+        ruleTimeWrapEl.style.display = 'none';
+        ruleIntervalWrapEl.style.display = 'block';
+      }
+    };
+
+    document.getElementById('proactiveBtn').onclick = function () {
+      renderProactivePanel();
+      proactiveModalEl.classList.add('open');
+    };
+
+    document.getElementById('closeProactiveModalBtn').onclick = function () {
+      proactiveModalEl.classList.remove('open');
+    };
+
+    document.getElementById('toggleGlobalProactiveBtn').onclick = function () {
+      var store = loadProactiveStore();
+      store.globalEnabled = !store.globalEnabled;
+      saveProactiveStore(store);
+      renderProactivePanel();
+    };
+
+    document.getElementById('addRuleBtn').onclick = function () {
+      var stype = ruleTypeSelectEl.value || 'daily';
+      var title = ruleTitleInputEl.value.trim() || (stype === 'daily' ? '每日問候' : stype === 'interval' ? '定時提醒' : '閒置關懷');
+      var msg = ruleMsgInputEl.value.trim() || '主人～記得休息一下喝口水喔！🐾';
+      var timeVal = ruleTimeInputEl.value.trim() || '09:00';
+      var intervalVal = Math.max(1, parseInt(ruleIntervalInputEl.value, 10) || 60);
+
+      var store = loadProactiveStore();
+      store.rules.push({
+        id: 'rule-' + Date.now().toString(36),
+        title: title,
+        message: msg,
+        scheduleType: stype,
+        time: timeVal,
+        intervalMinutes: intervalVal,
+        enabled: true,
+        createdAt: new Date().toISOString(),
+        lastTriggeredAt: null
+      });
+      saveProactiveStore(store);
+      ruleTitleInputEl.value = '';
+      ruleMsgInputEl.value = '';
+      renderProactivePanel();
+    };
+
+    document.getElementById('testProactiveBubbleBtn').onclick = function () {
+      var triggered = checkDueProactiveRules(false);
+      if (!triggered) {
+        checkDueProactiveRules(true);
+      }
+      proactiveModalEl.classList.remove('open');
+    };
+
+    document.getElementById('syncProactiveCloudBtn').onclick = async function () {
+      var cfg = getConfig();
+      if (!cfg.token) {
+        proactiveModalEl.classList.remove('open');
+        openSettings();
+        return;
+      }
+      var store = loadProactiveStore();
+      var summaryText = '請使用 manage_proactive_messages 工具同步我的主動訊息設定，目前總開關為 ' + (store.globalEnabled ? 'true' : 'false') + '，共有 ' + store.rules.length + ' 筆規則：' + JSON.stringify(store.rules);
+      proactiveModalEl.classList.remove('open');
+      inputEl.value = summaryText;
+      sendMessage();
+    };
+
+    document.getElementById('proactiveCloseBtn').onclick = function () {
+      proactiveBubbleEl.classList.remove('show');
+    };
+
+    document.getElementById('proactiveReplyBtn').onclick = function () {
+      proactiveBubbleEl.classList.remove('show');
+      if (activeBubbleRule) {
+        inputEl.value = '收到你的「' + activeBubbleRule.title + '」提醒囉！';
+      }
+      inputEl.focus();
+    };
+
+    window.addEventListener('pointerdown', markUserActivity);
+    setInterval(function () {
+      checkDueProactiveRules(false);
+    }, 30000);
   </script>
 </body>
 </html>`;
