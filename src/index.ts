@@ -4,32 +4,47 @@ import type { Env, InteractRequest } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
 
-// 新增：捕捉所有錯誤並把詳細原因回傳給手機端顯示
+// 暫時以 HTTP 200 回傳錯誤細節，避免 HTTP Shortcuts 隱藏錯誤內容
 app.onError((err, c) => {
-  const status = 'status' in err && typeof err.status === 'number' ? err.status : 500;
   return c.json(
     {
-      error: err.message || 'Unknown Error',
-      detail: String(err),
+      reply: `⚠️ 診斷錯誤：${err.message || String(err)}`,
+      action: { emotion: 'thinking' },
     },
-    status as 400 | 500
+    200
   );
 });
 
 app.get('/health', (c) => c.json({ status: 'ok', service: 'gemini-pet-bff' }));
 
+// 新增：直接用手機瀏覽器測試 Google Cloud Gemini 連線
+app.get('/test-gemini', async (c) => {
+  try {
+    const geminiSvc = new GeminiService(c.env);
+    const res = await geminiSvc.generateReply({
+      userMessage: '打個招呼',
+      devicePlatform: 'android',
+      state: { affection: 50, energy: 80, last_device: 'android', updated_at: new Date().toISOString() },
+      memories: [],
+      history: [],
+    });
+    return c.json({ ok: true, result: res });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 app.post('/v1/pet/interact', async (c) => {
   const auth = c.req.header('Authorization');
   if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
-    return c.json({ error: 'Unauthorized: Token 不符' }, 401);
+    return c.json({ reply: '⚠️ 診斷錯誤：Authorization Token 不符' }, 200);
   }
 
-  // 新增：明確檢查 JSON 格式是否正確
   let body: InteractRequest;
   try {
     body = await c.req.json<InteractRequest>();
   } catch {
-    return c.json({ error: 'Bad Request: 手機傳送的 JSON 格式有誤，請檢查引號或變數設定' }, 400);
+    return c.json({ reply: '⚠️ 診斷錯誤：Request Body 不是合法的 JSON 格式' }, 200);
   }
 
   const userId = body.user_id || 'default_user';
@@ -39,7 +54,7 @@ app.post('/v1/pet/interact', async (c) => {
 
   const locked = await stateSvc.acquireLock(userId);
   if (!locked) {
-    return c.json({ error: 'Pet is busy responding to another device' }, 429);
+    return c.json({ reply: '⚠️ 診斷錯誤：裝置鎖定中，請稍候 15 秒再試' }, 200);
   }
 
   try {
