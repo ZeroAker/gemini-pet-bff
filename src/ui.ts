@@ -55,11 +55,31 @@ export const CHAT_HTML = `<!DOCTYPE html>
       border-radius: 16px;
       font-size: 15px;
       line-height: 1.5;
+      word-break: break-word;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 60px;
+    }
+    .bubble.has-time {
+      padding-bottom: 7px;
+    }
+    .bubble-text {
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .bubble-time {
+      font-size: 11px;
+      line-height: 1.1;
+      align-self: flex-end;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.2px;
+      user-select: none;
+    }
     .msg.user .bubble { background: #5b4ee6; color: #fff; border-bottom-right-radius: 4px; }
+    .msg.user .bubble-time { color: rgba(255, 255, 255, 0.74); }
     .msg.bot .bubble { background: #1d2233; color: #e6e8f0; border: 1px solid #2b3147; border-bottom-left-radius: 4px; }
+    .msg.bot .bubble-time { color: #8c96b2; }
     .meta { font-size: 11px; color: #7e87a3; padding: 0 4px; }
     footer {
       background: #171a26;
@@ -199,12 +219,38 @@ export const CHAT_HTML = `<!DOCTYPE html>
       localStorage.setItem('pet_ui_log', JSON.stringify(list.slice(-30)));
     }
 
-    function renderMessage(role, text, metaText) {
+    function formatTime(ts) {
+      if (!ts) return '';
+      if (typeof ts === 'string' && ts.length === 5 && ts.charAt(2) === ':') {
+        return ts;
+      }
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return '';
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      return hh + ':' + mm;
+    }
+
+    function renderMessage(role, text, metaText, timestamp) {
       const wrap = document.createElement('div');
       wrap.className = 'msg ' + role;
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
-      bubble.textContent = text;
+
+      const textEl = document.createElement('div');
+      textEl.className = 'bubble-text';
+      textEl.textContent = text;
+      bubble.appendChild(textEl);
+
+      const timeStr = formatTime(timestamp);
+      if (timeStr) {
+        bubble.classList.add('has-time');
+        const timeEl = document.createElement('div');
+        timeEl.className = 'bubble-time';
+        timeEl.textContent = timeStr;
+        bubble.appendChild(timeEl);
+      }
+
       wrap.appendChild(bubble);
       if (metaText) {
         const meta = document.createElement('div');
@@ -253,12 +299,13 @@ export const CHAT_HTML = `<!DOCTYPE html>
       inputEl.style.height = 'auto';
       sendBtn.disabled = true;
 
+      const userTime = Date.now();
       const log = loadLocalLog();
-      log.push({ role: 'user', text: text, meta: '' });
+      log.push({ role: 'user', text: text, meta: '', time: userTime });
       saveLocalLog(log);
-      renderMessage('user', text, '');
+      renderMessage('user', text, '', userTime);
 
-      const loadingEl = renderMessage('bot', '思考中...', '');
+      const loadingEl = renderMessage('bot', '思考中...', '', null);
 
       try {
         const res = await fetch('/v1/pet/interact', {
@@ -298,13 +345,14 @@ export const CHAT_HTML = `<!DOCTYPE html>
         }
         const metaStr = metaParts.join(' · ');
 
+        const botTime = Date.now();
         const updatedLog = loadLocalLog();
-        updatedLog.push({ role: 'bot', text: reply, meta: metaStr });
+        updatedLog.push({ role: 'bot', text: reply, meta: metaStr, time: botTime });
         saveLocalLog(updatedLog);
-        renderMessage('bot', reply, metaStr);
+        renderMessage('bot', reply, metaStr, botTime);
       } catch (err) {
         loadingEl.remove();
-        renderMessage('bot', '⚠️ 連線失敗：' + err.message, '');
+        renderMessage('bot', '⚠️ 連線失敗：' + err.message, '', Date.now());
       } finally {
         sendBtn.disabled = false;
         inputEl.focus();
@@ -315,12 +363,12 @@ export const CHAT_HTML = `<!DOCTYPE html>
     const upgradeTitle = document.getElementById('upgradeTitle');
     const upgradeLogs = document.getElementById('upgradeLogs');
     const upgradeLink = document.getElementById('upgradeLink');
-    
+
     document.getElementById('closeUpgradeBar').onclick = function () {
       upgradeBar.style.display = 'none';
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     };
-    
+
     async function fetchUpgradeStatus() {
       const cfg = getConfig();
       if (!cfg.token) return;
@@ -330,58 +378,52 @@ export const CHAT_HTML = `<!DOCTYPE html>
         });
         const st = await res.json();
         upgradeBar.style.display = 'block';
-    
+
         if (st.status === 'idle') {
           upgradeTitle.textContent = 'ℹ️ 目前尚無自我升級紀錄';
           upgradeLogs.textContent = '';
           upgradeLink.innerHTML = '';
           return;
         }
-    
+
         if (st.is_stale) {
-               upgradeTitle.textContent = '⚠️ 任務已超過 6 分鐘無更新，請點擊下方 Actions 確認';
-               if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-             } else if (st.status === 'running') {
-               upgradeTitle.textContent = '🔄 GitHub Actions 升級中（已耗時 ' + (st.elapsed_sec || 0) + ' 秒）';
-             } else if (st.status === 'merged') {
-               upgradeTitle.textContent = '🎉 升級已合併至主分支！Cloudflare 約 30 秒後上線';
-               if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-             } else if (st.status === 'pr_created') {
-               upgradeTitle.textContent = '✅ PR 已建立，等待合併';
-               if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-             } else {
-               upgradeTitle.textContent = '❌ 升級終止：' + st.status;
-               if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-             }
-        
-             upgradeLogs.textContent = (st.logs || []).join('\n') + (st.error ? '\n錯誤: ' + st.error : '');
-             upgradeLogs.scrollTop = upgradeLogs.scrollHeight;
-        
-             const links = [];
-             if (st.actions_url) {
-               links.push('<a href="' + st.actions_url + '" target="_blank" style="color:#74b9ff;margin-right:12px;">查看 Actions 即時終端日誌 ↗</a>');
-             }
-             if (st.pr_url) {
-               links.push('<a href="' + st.pr_url + '" target="_blank" style="color:#a29bfe;">查看 PR 變更內容 ↗</a>');
-             }
-             upgradeLink.innerHTML = links.join('');
-    
-        upgradeLogs.textContent = (st.logs || []).join('\n') + (st.error ? '\n錯誤: ' + st.error : '');
+          upgradeTitle.textContent = '⚠️ 任務已超過 6 分鐘無更新，請點擊下方 Actions 確認';
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        } else if (st.status === 'running') {
+          upgradeTitle.textContent = '🔄 GitHub Actions 升級中（已耗時 ' + (st.elapsed_sec || 0) + ' 秒）';
+        } else if (st.status === 'merged') {
+          upgradeTitle.textContent = '🎉 升級已合併至主分支！Cloudflare 約 30 秒後上線';
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        } else if (st.status === 'pr_created') {
+          upgradeTitle.textContent = '✅ PR 已建立，等待合併';
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        } else {
+          upgradeTitle.textContent = '❌ 升級終止：' + st.status;
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        }
+
+        upgradeLogs.textContent = (st.logs || []).join('\\n') + (st.error ? '\\n錯誤: ' + st.error : '');
         upgradeLogs.scrollTop = upgradeLogs.scrollHeight;
-        upgradeLink.innerHTML = st.pr_url
-          ? '<a href="' + st.pr_url + '" target="_blank" style="color:#a29bfe;">點此查看 GitHub PR 與部署狀態 ↗</a>'
-          : '';
+
+        const links = [];
+        if (st.actions_url) {
+          links.push('<a href="' + st.actions_url + '" target="_blank" style="color:#74b9ff;margin-right:12px;">查看 Actions 即時終端日誌 ↗</a>');
+        }
+        if (st.pr_url) {
+          links.push('<a href="' + st.pr_url + '" target="_blank" style="color:#a29bfe;">查看 PR 變更內容 ↗</a>');
+        }
+        upgradeLink.innerHTML = links.join('');
       } catch (e) {
         upgradeTitle.textContent = '⚠️ 查詢進度失敗：' + e.message;
       }
     }
-    
+
     function startUpgradePolling() {
       fetchUpgradeStatus();
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(fetchUpgradeStatus, 3000);
     }
-    
+
     document.getElementById('upgradeBtn').onclick = startUpgradePolling;
     sendBtn.onclick = sendMessage;
     inputEl.addEventListener('input', function () {
@@ -392,10 +434,10 @@ export const CHAT_HTML = `<!DOCTYPE html>
     // 初始化載入本地畫面紀錄
     const initialLog = loadLocalLog();
     if (initialLog.length === 0) {
-      renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天囉。', '');
+      renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天囉。', '', Date.now());
     } else {
       initialLog.forEach(function (item) {
-        renderMessage(item.role, item.text, item.meta);
+        renderMessage(item.role, item.text, item.meta, item.time);
       });
     }
 
