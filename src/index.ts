@@ -4,17 +4,35 @@ import type { Env, InteractRequest } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
 
+// 新增：捕捉所有錯誤並把詳細原因回傳給手機端顯示
+app.onError((err, c) => {
+  const status = 'status' in err && typeof err.status === 'number' ? err.status : 500;
+  return c.json(
+    {
+      error: err.message || 'Unknown Error',
+      detail: String(err),
+    },
+    status as 400 | 500
+  );
+});
+
 app.get('/health', (c) => c.json({ status: 'ok', service: 'gemini-pet-bff' }));
 
 app.post('/v1/pet/interact', async (c) => {
   const auth = c.req.header('Authorization');
   if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
-    return c.json({ error: 'Unauthorized' }, 401);
+    return c.json({ error: 'Unauthorized: Token 不符' }, 401);
   }
 
-  const body = await c.req.json<InteractRequest>();
-  const userId = body.user_id || 'default_user';
+  // 新增：明確檢查 JSON 格式是否正確
+  let body: InteractRequest;
+  try {
+    body = await c.req.json<InteractRequest>();
+  } catch {
+    return c.json({ error: 'Bad Request: 手機傳送的 JSON 格式有誤，請檢查引號或變數設定' }, 400);
+  }
 
+  const userId = body.user_id || 'default_user';
   const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
   const memorySvc = new MemoryService(c.env.MEM0_API_KEY);
   const geminiSvc = new GeminiService(c.env);
@@ -52,7 +70,6 @@ app.post('/v1/pet/interact', async (c) => {
       { role: 'assistant' as const, content: aiResult.reply },
     ];
 
-    // 背景非同步寫入狀態與長期記憶，不拖慢手機端回應速度
     c.executionCtx.waitUntil(
       Promise.all([
         stateSvc.savePetState(userId, nextState),
