@@ -59,6 +59,30 @@ app.get('/test-gemini', async (c) => {
   }
 });
 
+app.get('/v1/pet/upgrade/status', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  const userId = c.req.query('uid') || 'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const status = await stateSvc.getUpgradeStatus(userId);
+
+  if (!status) {
+    return c.json({ status: 'idle', logs: [] });
+  }
+
+  const ageMs = Date.now() - Date.parse(status.updated_at);
+  const isStale = status.status === 'running' && ageMs > 360_000;
+
+  return c.json({
+    ...status,
+    elapsed_sec: status.started_at ? Math.floor((Date.now() - Date.parse(status.started_at)) / 1000) : 0,
+    is_stale: isStale,
+  });
+});
+
 app.post('/v1/pet/interact', async (c) => {
   const auth = c.req.header('Authorization');
   if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {

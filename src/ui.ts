@@ -116,9 +116,19 @@ export const CHAT_HTML = `<!DOCTYPE html>
         <div class="stats" id="petStats">好感度 -- ｜ 活力 --</div>
       </div>
     </div>
-    <button class="btn-icon" id="settingsBtn">設定</button>
+    <div style="display:flex;gap:6px;">
+      <button class="btn-icon" id="upgradeBtn">升級進度</button>
+      <button class="btn-icon" id="settingsBtn">設定</button>
+    </div>
   </header>
-
+  <div id="upgradeBar" style="display:none;background:#141827;border-bottom:1px solid #2b3147;padding:10px 14px;font-size:12px;color:#cfd5e6;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <strong id="upgradeTitle">🔄 升級進度追蹤中...</strong>
+      <button class="btn-icon" id="closeUpgradeBar" style="padding:2px 8px;font-size:11px;">隱藏</button>
+    </div>
+    <pre id="upgradeLogs" style="white-space:pre-wrap;font-family:monospace;color:#9aa3bd;max-height:120px;overflow-y:auto;line-height:1.4;"></pre>
+    <div id="upgradeLink" style="margin-top:6px;"></div>
+  </div>
   <main id="chat"></main>
 
   <footer>
@@ -300,7 +310,79 @@ export const CHAT_HTML = `<!DOCTYPE html>
         inputEl.focus();
       }
     }
-
+    let pollTimer = null;
+    const upgradeBar = document.getElementById('upgradeBar');
+    const upgradeTitle = document.getElementById('upgradeTitle');
+    const upgradeLogs = document.getElementById('upgradeLogs');
+    const upgradeLink = document.getElementById('upgradeLink');
+    
+    document.getElementById('closeUpgradeBar').onclick = function () {
+      upgradeBar.style.display = 'none';
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    };
+    
+    async function fetchUpgradeStatus() {
+      const cfg = getConfig();
+      if (!cfg.token) return;
+      try {
+        const res = await fetch('/v1/pet/upgrade/status?uid=' + encodeURIComponent(cfg.uid), {
+          headers: { 'Authorization': 'Bearer ' + cfg.token }
+        });
+        const st = await res.json();
+        upgradeBar.style.display = 'block';
+    
+        if (st.status === 'idle') {
+          upgradeTitle.textContent = 'ℹ️ 目前尚無自我升級紀錄';
+          upgradeLogs.textContent = '';
+          upgradeLink.innerHTML = '';
+          return;
+        }
+    
+        if (st.is_stale) {
+               upgradeTitle.textContent = '⚠️ 任務已超過 6 分鐘無更新，請點擊下方 Actions 確認';
+               if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+             } else if (st.status === 'running') {
+               upgradeTitle.textContent = '🔄 GitHub Actions 升級中（已耗時 ' + (st.elapsed_sec || 0) + ' 秒）';
+             } else if (st.status === 'merged') {
+               upgradeTitle.textContent = '🎉 升級已合併至主分支！Cloudflare 約 30 秒後上線';
+               if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+             } else if (st.status === 'pr_created') {
+               upgradeTitle.textContent = '✅ PR 已建立，等待合併';
+               if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+             } else {
+               upgradeTitle.textContent = '❌ 升級終止：' + st.status;
+               if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+             }
+        
+             upgradeLogs.textContent = (st.logs || []).join('\n') + (st.error ? '\n錯誤: ' + st.error : '');
+             upgradeLogs.scrollTop = upgradeLogs.scrollHeight;
+        
+             const links = [];
+             if (st.actions_url) {
+               links.push('<a href="' + st.actions_url + '" target="_blank" style="color:#74b9ff;margin-right:12px;">查看 Actions 即時終端日誌 ↗</a>');
+             }
+             if (st.pr_url) {
+               links.push('<a href="' + st.pr_url + '" target="_blank" style="color:#a29bfe;">查看 PR 變更內容 ↗</a>');
+             }
+             upgradeLink.innerHTML = links.join('');
+    
+        upgradeLogs.textContent = (st.logs || []).join('\n') + (st.error ? '\n錯誤: ' + st.error : '');
+        upgradeLogs.scrollTop = upgradeLogs.scrollHeight;
+        upgradeLink.innerHTML = st.pr_url
+          ? '<a href="' + st.pr_url + '" target="_blank" style="color:#a29bfe;">點此查看 GitHub PR 與部署狀態 ↗</a>'
+          : '';
+      } catch (e) {
+        upgradeTitle.textContent = '⚠️ 查詢進度失敗：' + e.message;
+      }
+    }
+    
+    function startUpgradePolling() {
+      fetchUpgradeStatus();
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(fetchUpgradeStatus, 3000);
+    }
+    
+    document.getElementById('upgradeBtn').onclick = startUpgradePolling;
     sendBtn.onclick = sendMessage;
     inputEl.addEventListener('input', function () {
       this.style.height = 'auto';

@@ -139,19 +139,7 @@ export async function executeAgentTool(
       if (!instruction) return { error: '請提供具體的升級需求說明' };
 
       const upgrader = new SelfUpgradeService(ctx.env);
-      const job = upgrader.runUpgradeJob(ctx.userId, instruction, ctx.stateSvc);
-
-      if (ctx.waitUntil) {
-        ctx.waitUntil(job);
-      } else {
-        await job;
-      }
-
-      return {
-        status: 'started',
-        engine: `${ctx.env.MODEL_UPGRADER || 'gemini-4-neon'} (thinkingLevel: HIGH)`,
-        message: '已在背景啟動自我升級任務，完成程式碼生成與安全檢查後會自動送出 PR 並部署。約 1 分鐘後可詢問升級進度。',
-      };
+      return await upgrader.dispatchUpgradeJob(ctx.userId, instruction, ctx.stateSvc);
     }
 
     if (name === 'check_upgrade_status') {

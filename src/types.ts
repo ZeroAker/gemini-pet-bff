@@ -69,12 +69,16 @@ export interface TodoItem {
 
 // 自我升級狀態記錄（存於 Upstash Redis）
 export interface UpgradeStatus {
-  status: 'running' | 'pr_created' | 'rejected' | 'failed';
+  status: 'running' | 'pr_created' | 'merged' | 'rejected' | 'failed';
+  step?: string;
   request: string;
   summary?: string;
   pr_url?: string;
+  actions_url?: string;
   changed_files?: string[];
+  logs?: string[];
   error?: string;
+  started_at?: string;
   updated_at: string;
 }
 
