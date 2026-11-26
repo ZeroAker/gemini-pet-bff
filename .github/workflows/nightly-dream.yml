@@ -41,7 +41,7 @@ jobs:
           MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
           GCP_PROJECT_ID: '1031423259598'
           GCP_LOCATION: 'global'
-          MODEL_DREAMER: 'gemini-4-neon'
+          MODEL_DREAMER: 'gemini-4-argon'
           INPUT_USER_ID: ${{ inputs.user_id }}
           INPUT_FORCE: ${{ inputs.force }}
         run: node scripts/nightly-dream.mjs
