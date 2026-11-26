@@ -13,3 +13,6 @@ MODEL_UPGRADER = "gemini-4-argon"
 GITHUB_OWNER = "ZeroAker"
 GITHUB_REPO = "gemini-pet-bff"
 GITHUB_BRANCH = "main"
+
+[triggers]
+crons = ["0 * * * *"]

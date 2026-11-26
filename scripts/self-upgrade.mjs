@@ -523,6 +523,7 @@ function buildSystemPrompt() {
     '    { "action": "delete", "path": "src/plugins/old.ts" }',
     '  ]',
     '}',
+    '8. src/plugins/lifecycle.ts 為每小時 Cron 生理時鐘規則檔，嚴禁刪除且必須保留 export function computeNextLifecycleState(state: PetState, ctx: LifecycleContext): PetState。',
   ].join('\n');
 }
 

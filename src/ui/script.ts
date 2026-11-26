@@ -1720,6 +1720,25 @@ export const UI_SCRIPT: string = `
         }
       }, 1000);
     }
+      
+    function applyPetState(ps) {
+      if (!ps) return;
+      if (ps.mood) petEmojiEl.textContent = EMOJI_MAP[ps.mood] || '🐱';
+      const note = ps.status_note ? ' · ' + ps.status_note : '';
+      petStatsEl.textContent = '好感度 ' + ps.affection + ' ｜ 活力 ' + ps.energy + note;
+    }
+
+    async function syncPetState() {
+      const cfg = getConfig();
+      if (!cfg.token) return;
+      try {
+        const res = await fetch('/v1/pet/state?uid=' + encodeURIComponent(cfg.uid), {
+          headers: { 'Authorization': 'Bearer ' + cfg.token }
+        });
+        const data = await res.json();
+        if (data.ok && data.pet_state) applyPetState(data.pet_state);
+      } catch (e) {}
+    }
 
     document.getElementById('careGameBtn').onclick = function () {
       updateCareUiDisplay();

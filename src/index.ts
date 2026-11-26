@@ -1,9 +1,43 @@
 import { Hono } from 'hono';
+import { computeNextLifecycleState } from './plugins/lifecycle';
 import { GeminiService, MemoryService, StateService } from './services';
-import type { Env, InteractRequest } from './types';
+import type { Env, InteractRequest, PetState } from './types';
 import { CHAT_HTML } from './ui';
 
 const app = new Hono<{ Bindings: Env }>();
+
+function getHongKongHour(now: Date): number {
+  const hourStr = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Hong_Kong',
+    hour: '2-digit',
+    hour12: false,
+  }).format(now);
+  const parsed = Number.parseInt(hourStr, 10);
+  return Number.isNaN(parsed) ? 0 : parsed % 24;
+}
+
+async function runLifecycleTick(userId: string, stateSvc: StateService): Promise<PetState> {
+  const current = await stateSvc.getPetState(userId);
+  const now = new Date();
+  const lastActiveMs = Date.parse(current.last_active_at || current.updated_at);
+  const hoursSinceLastActive = Number.isNaN(lastActiveMs)
+    ? 0
+    : Math.max(0, (now.getTime() - lastActiveMs) / 3_600_000);
+
+  try {
+    const next = computeNextLifecycleState(current, {
+      now,
+      hkHour: getHongKongHour(now),
+      hoursSinceLastActive,
+    });
+    await stateSvc.savePetState(userId, next);
+    return next;
+  } catch (err) {
+    console.error(`[Lifecycle:${userId}] 規則執行異常，保留原狀態:`, err);
+    return current;
+  }
+}
+
 app.get('/', (c) => c.html(CHAT_HTML));
 
 app.onError((err, c) => {
@@ -41,13 +75,22 @@ app.get('/test-models', async (c) => {
 app.get('/test-gemini', async (c) => {
   try {
     const q = c.req.query('q') || '打個招呼';
+    const now = new Date().toISOString();
     const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
     const geminiSvc = new GeminiService(c.env);
     const res = await geminiSvc.generateReply({
       userId: 'test_user',
       userMessage: q,
       devicePlatform: 'android',
-      state: { affection: 50, energy: 80, last_device: 'android', updated_at: new Date().toISOString() },
+      state: {
+        affection: 50,
+        energy: 80,
+        mood: 'idle',
+        status_note: '測試模式',
+        last_device: 'android',
+        last_active_at: now,
+        updated_at: now,
+      },
       memories: [],
       history: [],
       stateSvc,
@@ -57,6 +100,30 @@ app.get('/test-gemini', async (c) => {
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// 查詢目前桌寵生理狀態（PWA 開啟時自動同步用）
+app.get('/v1/pet/state', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const userId = c.req.query('uid') || 'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const state = await stateSvc.getPetState(userId);
+  return c.json({ ok: true, pet_state: state });
+});
+
+// 手動觸發一次生理時鐘演算（測試驗證用）
+app.post('/v1/pet/lifecycle/tick', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const userId = c.req.query('uid') || 'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const next = await runLifecycleTick(userId, stateSvc);
+  return c.json({ ok: true, pet_state: next });
 });
 
 app.get('/v1/pet/upgrade/status', async (c) => {
@@ -125,11 +192,16 @@ app.post('/v1/pet/interact', async (c) => {
       waitUntil: (p) => c.executionCtx.waitUntil(p),
     });
 
-    const nextState = {
+    const nowIso = new Date().toISOString();
+    const nextState: PetState = {
+      ...state,
       affection: Math.min(100, Math.max(0, state.affection + aiResult.affection_delta)),
       energy: Math.max(10, state.energy - 1),
+      mood: aiResult.emotion,
+      status_note: '啱啱同主人傾完計',
       last_device: body.device.platform,
-      updated_at: new Date().toISOString(),
+      last_active_at: nowIso,
+      updated_at: nowIso,
     };
 
     const newTurns = [
@@ -139,6 +211,7 @@ app.post('/v1/pet/interact', async (c) => {
 
     c.executionCtx.waitUntil(
       Promise.all([
+        stateSvc.registerActiveUser(userId),
         stateSvc.savePetState(userId, nextState),
         stateSvc.appendHistory(userId, newTurns),
         memorySvc.addMemory(userId, newTurns),
@@ -156,4 +229,15 @@ app.post('/v1/pet/interact', async (c) => {
   }
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const stateSvc = new StateService(env.UPSTASH_REDIS_REST_URL, env.UPSTASH_REDIS_REST_TOKEN);
+    const job = (async () => {
+      const users = await stateSvc.getActiveUsers();
+      const targets = users.length > 0 ? users : ['zero_main'];
+      await Promise.all(targets.map((uid) => runLifecycleTick(uid, stateSvc)));
+    })();
+    ctx.waitUntil(job);
+  },
+};

@@ -19,6 +19,8 @@ export interface Env {
 
 export type ComplexityTier = 'simple' | 'medium' | 'complex';
 
+export type PetEmotion = 'idle' | 'happy' | 'thinking' | 'sleepy' | 'caring';
+
 export interface RouteDecision {
   tier: ComplexityTier;
   needsTools: boolean;
@@ -40,13 +42,23 @@ export interface InteractRequest {
 export interface PetState {
   affection: number;
   energy: number;
+  mood: PetEmotion;
+  status_note: string;
   last_device: string;
+  last_active_at: string;
   updated_at: string;
+  extra?: Record<string, unknown>;
+}
+
+export interface LifecycleContext {
+  now: Date;
+  hkHour: number;
+  hoursSinceLastActive: number;
 }
 
 export interface PetStructuredReply {
   reply: string;
-  emotion: 'idle' | 'happy' | 'thinking' | 'sleepy' | 'caring';
+  emotion: PetEmotion;
   affection_delta: number;
   meta?: {
     complexity: ComplexityTier;
@@ -67,7 +79,6 @@ export interface TodoItem {
   created_at: string;
 }
 
-// 自我升級狀態記錄（存於 Upstash Redis）
 export interface UpgradeStatus {
   status: 'running' | 'pr_created' | 'merged' | 'rejected' | 'failed';
   step?: string;
@@ -82,7 +93,6 @@ export interface UpgradeStatus {
   updated_at: string;
 }
 
-// 核心與插件共用的工具介面規範
 export interface ToolDeclaration {
   name: string;
   description: string;

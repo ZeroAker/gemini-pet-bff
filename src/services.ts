@@ -36,10 +36,39 @@ export class StateService {
     await this.command(['DEL', `lock:${userId}`]);
   }
 
-  async getPetState(userId: string): Promise<PetState> {
+async getPetState(userId: string): Promise<PetState> {
+    const now = new Date().toISOString();
+    const fallback: PetState = {
+      affection: 50,
+      energy: 80,
+      mood: 'idle',
+      status_note: '精神不錯，等緊主人搵我',
+      last_device: 'unknown',
+      last_active_at: now,
+      updated_at: now,
+    };
+
     const raw = await this.command<string | null>(['GET', `state:${userId}`]);
-    if (raw) return JSON.parse(raw) as PetState;
-    return { affection: 50, energy: 80, last_device: 'unknown', updated_at: new Date().toISOString() };
+    if (!raw) return fallback;
+
+    const parsed = JSON.parse(raw) as Partial<PetState>;
+    return {
+      ...fallback,
+      ...parsed,
+      mood: parsed.mood || fallback.mood,
+      status_note: parsed.status_note || fallback.status_note,
+      last_active_at: parsed.last_active_at || parsed.updated_at || now,
+      updated_at: parsed.updated_at || now,
+    };
+  }
+
+  async registerActiveUser(userId: string): Promise<void> {
+    await this.command(['SADD', 'active_users', userId]);
+  }
+
+  async getActiveUsers(): Promise<string[]> {
+    const res = await this.command<string[] | null>(['SMEMBERS', 'active_users']);
+    return Array.isArray(res) ? res : [];
   }
 
   async savePetState(userId: string, state: PetState): Promise<void> {
@@ -364,13 +393,21 @@ export class GeminiService {
           ? '請用清晰的繁體中文回覆，必要時可使用條列，控制在 250 字以內。'
           : '這是一個複雜問題，請給予完整且有條理的繁體中文解答。';
 
+    const lastActiveMs = Date.parse(params.state.last_active_at || params.state.updated_at);
+    const hoursAway = Number.isNaN(lastActiveMs)
+      ? 0
+      : Math.max(0, Math.floor((Date.now() - lastActiveMs) / 3_600_000));
+
     const systemPrompt = [
       '你是一隻具備自我升級能力的專屬 AI Agent 桌寵，性格聰明、貼心帶一點俏皮。',
       lengthGuideline,
-      `目前狀態：好感度 ${params.state.affection}/100，活力 ${params.state.energy}/100。`,
+      `目前狀態：好感度 ${params.state.affection}/100，活力 ${params.state.energy}/100，當前心情：${params.state.mood}（${params.state.status_note}）。`,
+      hoursAway >= 12
+        ? `備註：主人已經有約 ${hoursAway} 小時無搵你，回覆時可以自然帶出少少掛住或關心嘅語氣。`
+        : '',
       `主人目前裝置：${params.devicePlatform}（場景：${params.deviceContext || '日常互動'}，上次裝置：${params.state.last_device}）。`,
       params.memories.length > 0 ? `你記得關於主人的長期記憶：\n- ${params.memories.join('\n- ')}` : '',
-      '當主人要求你新增、修改、改善或刪除自身功能時，請呼叫 request_self_upgrade 工具；詢問升級進度或已安裝插件時，請呼叫 check_upgrade_status。',
+      '當主人要求你新增、修改、改善或刪除自身功能（包含生理時鐘作息規則或 PWA 介面）時，請呼叫 request_self_upgrade 工具；詢問升級進度或已安裝插件時，請呼叫 check_upgrade_status。',
       '完成工具呼叫後，請嚴格只輸出一段合法 JSON：{"reply": "回覆內容（換行用 \\n）", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3的整數}',
     ]
       .filter(Boolean)
