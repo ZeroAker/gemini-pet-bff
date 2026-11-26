@@ -12,6 +12,7 @@ import type {
   RouteDecision,
   TodoItem,
   UpgradeStatus,
+  PetCareMeta
 } from './types';
 
 export function createDefaultPersona(nowIso = new Date().toISOString()): PetPersona {
@@ -112,6 +113,41 @@ async getPetState(userId: string): Promise<PetState> {
 
   async saveTodos(userId: string, todos: TodoItem[]): Promise<void> {
     await this.command(['SET', `todos:${userId}`, JSON.stringify(todos)]);
+  }
+  
+  async getCareMeta(userId: string): Promise<PetCareMeta> {
+    const fallback: PetCareMeta = {
+      totalFedCount: 0,
+      totalGamesPlayed: 0,
+      lastFedAt: null,
+      lastGameAt: null,
+      history: [],
+      updatedAt: new Date().toISOString(),
+    };
+    const raw = await this.command<string | null>(['GET', `pet_care:${userId}`]);
+    if (!raw) return fallback;
+    try {
+      const parsed = JSON.parse(raw) as Partial<PetCareMeta>;
+      return {
+        totalFedCount: typeof parsed.totalFedCount === 'number' ? parsed.totalFedCount : 0,
+        totalGamesPlayed: typeof parsed.totalGamesPlayed === 'number' ? parsed.totalGamesPlayed : 0,
+        lastFedAt: typeof parsed.lastFedAt === 'string' ? parsed.lastFedAt : null,
+        lastGameAt: typeof parsed.lastGameAt === 'string' ? parsed.lastGameAt : null,
+        history: Array.isArray(parsed.history) ? parsed.history.slice(-20) : [],
+        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : fallback.updatedAt,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  async saveCareMeta(userId: string, meta: PetCareMeta): Promise<void> {
+    const trimmed: PetCareMeta = {
+      ...meta,
+      history: meta.history.slice(-20),
+      updatedAt: new Date().toISOString(),
+    };
+    await this.command(['SET', `pet_care:${userId}`, JSON.stringify(trimmed)]);
   }
 
   async getUpgradeStatus(userId: string): Promise<UpgradeStatus | null> {

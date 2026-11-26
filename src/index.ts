@@ -3,6 +3,7 @@ import { computeNextLifecycleState } from './plugins/lifecycle';
 import { GeminiService, MemoryService, StateService } from './services';
 import type { Env, InteractRequest, PetState } from './types';
 import { CHAT_HTML } from './ui';
+import { petCareGamePlugin } from './plugins/pet-care-game';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -122,6 +123,38 @@ app.post('/v1/pet/lifecycle/tick', async (c) => {
   const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
   const next = await runLifecycleTick(userId, stateSvc);
   return c.json({ ok: true, pet_state: next });
+});
+
+app.post('/v1/pet/care', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json({ ok: false, error: 'Invalid JSON body' }, 400);
+  }
+
+  const userId =
+    (typeof body.uid === 'string' && body.uid.trim()) ||
+    c.req.query('uid') ||
+    'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+
+  const locked = await stateSvc.acquireLock(userId);
+  if (!locked) {
+    return c.json({ ok: false, error: '裝置狀態同步中，請稍候再試' }, 429);
+  }
+
+  try {
+    const result = await petCareGamePlugin.execute(body, { userId, stateSvc });
+    return c.json(result);
+  } finally {
+    await stateSvc.releaseLock(userId);
+  }
 });
 
 // 查詢桌寵日記本
@@ -285,16 +318,26 @@ app.post('/v1/pet/interact', async (c) => {
 
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
-    const nextState: PetState = {
-      ...state,
-      affection: Math.min(100, Math.max(0, state.affection + aiResult.affection_delta)),
-      energy: Math.max(10, state.energy - 1),
-      mood: aiResult.emotion,
-      status_note: '啱啱同主人傾完計',
-      last_device: body.device.platform,
-      last_active_at: nowIso,
-      updated_at: nowIso,
-    };
+    const careToolUsed = Boolean(aiResult.meta?.tools_used?.includes('manage_pet_care_game'));
+    const latestState = careToolUsed ? await stateSvc.getPetState(userId) : state;
+
+    const nextState: PetState = careToolUsed
+      ? {
+          ...latestState,
+          last_device: body.device.platform,
+          last_active_at: nowIso,
+          updated_at: nowIso,
+        }
+      : {
+          ...state,
+          affection: Math.min(100, Math.max(0, state.affection + aiResult.affection_delta)),
+          energy: Math.max(10, state.energy - 1),
+          mood: aiResult.emotion,
+          status_note: '啱啱同主人傾完計',
+          last_device: body.device.platform,
+          last_active_at: nowIso,
+          updated_at: nowIso,
+        };
 
     const newTurns = [
       { role: 'user' as const, content: body.input.content },

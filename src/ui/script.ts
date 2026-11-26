@@ -1779,9 +1779,10 @@ export const UI_SCRIPT: string = `
       var gainedE = st.energy - beforeEnergy;
       var summaryText = snack.emoji + ' 餵食「' + snack.name + '」成功！活力 +' + gainedE + '（目前 ' + st.energy + '），好感度 +' + snack.affectionGain + '（目前 ' + st.affection + '）';
       careFeedbackBoxEl.textContent = summaryText;
-      lastCareActionSummary = '我剛餵你吃了「' + snack.name + '」（請呼叫 manage_pet_care_game 工具：action 為 feed，snack_id 為 ' + snack.id + '，sync_energy 為 ' + st.energy + '，sync_affection 為 ' + st.affection + '）';
 
       showCareBubbleAndLog(snack.emoji, '餵食點心 · ' + snack.name, snack.reply, '照護互動 · 活力 ' + st.energy);
+      lastCareActionSummary = '我剛餵你吃了「' + snack.name + '」，現在你活力 ' + st.energy + '、好感度 ' + st.affection + '，快跟我撒嬌回應一下吧！';
+      syncCareActionToBackend({ action: 'feed', snack_id: snack.id });
     }
 
     function playRpsRound(playerMove) {
@@ -1829,9 +1830,10 @@ export const UI_SCRIPT: string = `
       var deltaE = st.energy - beforeE;
       rpsStatusTextEl.textContent = outcomeMsg + '（活力 +' + deltaE + ' / 好感 +' + affectionAdd + '）';
       careFeedbackBoxEl.textContent = '🎲 猜拳對決完成！活力提升至 ' + st.energy + '，好感度提升至 ' + st.affection + '！';
-      lastCareActionSummary = '我們剛玩了猜拳大作戰，我出' + moveNames[playerMove] + '，結果為 ' + result + '（請呼叫 manage_pet_care_game 工具：action 為 play_game，game_type 為 rps，player_choice 為 ' + playerMove + '，game_result 為 ' + result + '，sync_energy 為 ' + st.energy + '，sync_affection 為 ' + st.affection + '）';
 
       showCareBubbleAndLog('🎲', '猜拳大作戰', outcomeMsg, '小遊戲結算 · 活力 ' + st.energy);
+      lastCareActionSummary = '我們剛玩了猜拳大作戰，我出' + moveNames[playerMove] + '，結果為 ' + result + '（現在活力 ' + st.energy + '、好感度 ' + st.affection + '），快跟我互動回應一下吧！';
+      syncCareActionToBackend({ action: 'play_game', game_type: 'rps', player_choice: playerMove, game_result: result });
     }
 
     function stopHeartGameTimers() {
@@ -1888,9 +1890,10 @@ export const UI_SCRIPT: string = `
       var msg = '💖 10 秒挑戰結束！共接到 ' + heartScore + ' 顆愛心，桌寵活力 +' + actualE + '（目前 ' + st.energy + '）、好感度 +' + affectionGain + '！';
       careFeedbackBoxEl.textContent = msg;
       heartTimerTextEl.textContent = '挑戰完成！';
-      lastCareActionSummary = '我們剛玩了點擊接愛心挑戰，我接到了 ' + heartScore + ' 顆愛心（請呼叫 manage_pet_care_game 工具：action 為 play_game，game_type 為 catch_hearts，score 為 ' + heartScore + '，sync_energy 為 ' + st.energy + '，sync_affection 為 ' + st.affection + '）';
 
       showCareBubbleAndLog('💖', '點擊接愛心結算', msg, '小遊戲結算 · 活力 ' + st.energy);
+      lastCareActionSummary = '我們剛玩了點擊接愛心挑戰，我接到了 ' + heartScore + ' 顆愛心（現在活力 ' + st.energy + '、好感度 ' + st.affection + '），快跟我互動回應一下吧！';
+      syncCareActionToBackend({ action: 'play_game', game_type: 'catch_hearts', score: String(heartScore) });
     }
 
     function startHeartGame() {
@@ -1914,6 +1917,34 @@ export const UI_SCRIPT: string = `
         }
       }, 1000);
     }
+
+    async function syncCareActionToBackend(payload) {
+       var cfg = getConfig();
+       if (!cfg.token) return null;
+       try {
+         var reqBody = Object.assign({ uid: cfg.uid }, payload);
+         var res = await fetch('/v1/pet/care', {
+           method: 'POST',
+           headers: {
+             'Authorization': 'Bearer ' + cfg.token,
+             'Content-Type': 'application/json'
+           },
+           body: JSON.stringify(reqBody)
+         });
+         var data = await res.json();
+         if (data && data.pet_state) {
+           applyPetState(data.pet_state);
+         }
+         if (data && data.onCooldown && data.message) {
+           careFeedbackBoxEl.textContent = data.message;
+         } else if (data && data.summary) {
+           careFeedbackBoxEl.textContent = data.summary;
+         }
+         return data;
+       } catch (e) {
+         return null;
+       }
+     }
       
     function applyPetState(ps) {
       if (!ps || typeof ps !== 'object') return;
@@ -2032,8 +2063,9 @@ export const UI_SCRIPT: string = `
     }
 
     document.getElementById('careGameBtn').onclick = function () {
-      updateCareUiDisplay();
-      careGameModalEl.classList.add('open');
+       updateCareUiDisplay();
+       careGameModalEl.classList.add('open');
+       syncPetState(false);
     };
 
     document.getElementById('closeCareModalBtn').onclick = function () {

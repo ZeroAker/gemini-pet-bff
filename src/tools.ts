@@ -156,7 +156,7 @@ export async function executeAgentTool(
     // 執行自訂插件（獨立沙盒攔截，避免單一插件異常拖垮核心）
     const plugin = SAFE_CUSTOM_PLUGINS.find((p) => p.declaration.name === name);
     if (plugin) {
-      return await plugin.execute(args, { userId: ctx.userId });
+      return await plugin.execute(args, { userId: ctx.userId, stateSvc: ctx.stateSvc });
     }
 
     return { error: `未知工具：${name}` };

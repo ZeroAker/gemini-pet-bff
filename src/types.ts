@@ -1,3 +1,4 @@
+import type { StateService } from './services';
 export interface Env {
   GOOGLE_CLOUD_API_KEY: string;
   GCP_PROJECT_ID?: string;
@@ -144,7 +145,43 @@ export interface ToolDeclaration {
   };
 }
 
+export interface CareLogEntry {
+  id: string;
+  type: 'feed' | 'game';
+  itemOrGame: string;
+  energyDelta: number;
+  affectionDelta: number;
+  energyAfter: number;
+  affectionAfter: number;
+  summary: string;
+  timestamp: string;
+}
+
+export interface PetCareMeta {
+  totalFedCount: number;
+  totalGamesPlayed: number;
+  lastFedAt: string | null;
+  lastGameAt: string | null;
+  history: CareLogEntry[];
+  updatedAt: string;
+}
+
+export interface PluginContext {
+  userId: string;
+  stateSvc: StateService;
+}
+
+export interface ToolDeclaration {
+  name: string;
+  description: string;
+  parameters: {
+    type: 'OBJECT';
+    properties: Record<string, { type: string; description: string }>;
+    required?: string[];
+  };
+}
+
 export interface PluginTool {
   declaration: ToolDeclaration;
-  execute: (args: Record<string, unknown>, ctx: { userId: string }) => Promise<Record<string, unknown>>;
+  execute: (args: Record<string, unknown>, ctx: PluginContext) => Promise<Record<string, unknown>>;
 }

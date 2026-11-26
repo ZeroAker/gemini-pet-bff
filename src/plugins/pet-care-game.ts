@@ -1,4 +1,4 @@
-import type { PluginTool } from '../types';
+import type { CareLogEntry, PetState, PluginContext, PluginTool } from '../types';
 
 export type SnackId = 'dried_fish' | 'strawberry_cake' | 'special_coffee';
 export type GameType = 'rps' | 'catch_hearts';
@@ -14,43 +14,6 @@ export interface SnackSpec {
   flavorText: string;
 }
 
-export interface CareLogEntry {
-  id: string;
-  type: 'feed' | 'game';
-  itemOrGame: string;
-  energyDelta: number;
-  affectionDelta: number;
-  energyAfter: number;
-  affectionAfter: number;
-  summary: string;
-  timestamp: string;
-}
-
-export interface PetCareStore {
-  userId: string;
-  energy: number;
-  affection: number;
-  mood: string;
-  totalFedCount: number;
-  totalGamesPlayed: number;
-  lastFedAt: string | null;
-  lastGameAt: string | null;
-  updatedAt: string;
-  history: CareLogEntry[];
-}
-
-interface KvNamespaceLike {
-  get: (key: string) => Promise<string | null>;
-  put: (key: string, value: string) => Promise<unknown>;
-}
-
-interface CacheLike {
-  match: (request: Request | string) => Promise<Response | undefined>;
-  put: (request: Request | string, response: Response) => Promise<void>;
-}
-
-const CARE_MEMORY_STORE = new Map<string, PetCareStore>();
-
 const SNACK_CATALOG: Record<SnackId, SnackSpec> = {
   dried_fish: {
     id: 'dried_fish',
@@ -58,7 +21,7 @@ const SNACK_CATALOG: Record<SnackId, SnackSpec> = {
     emoji: '🐟',
     energyGain: 15,
     affectionGain: 3,
-    cooldownSec: 15,
+    cooldownSec: 5,
     flavorText: '咔滋咔滋！鹹香酥脆的小魚乾讓桌寵開心地搖起尾巴～',
   },
   strawberry_cake: {
@@ -67,7 +30,7 @@ const SNACK_CATALOG: Record<SnackId, SnackSpec> = {
     emoji: '🍰',
     energyGain: 25,
     affectionGain: 5,
-    cooldownSec: 25,
+    cooldownSec: 8,
     flavorText: '酸甜多汁的草莓配綿密奶油，桌寵幸福得眼睛都變成星星了！',
   },
   special_coffee: {
@@ -76,12 +39,12 @@ const SNACK_CATALOG: Record<SnackId, SnackSpec> = {
     emoji: '☕',
     energyGain: 35,
     affectionGain: 4,
-    cooldownSec: 30,
+    cooldownSec: 10,
     flavorText: '溫潤回甘的特調香氣撲鼻而來，桌寵瞬間充滿百分之百的幹勁！',
   },
 };
 
-const GAME_COOLDOWN_SEC = 10;
+const GAME_COOLDOWN_SEC = 5;
 
 function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -101,182 +64,12 @@ function asNumberOrFallback(value: unknown, fallback: number): number {
   return fallback;
 }
 
-function isKvLike(candidate: unknown): candidate is KvNamespaceLike {
-  if (!candidate || typeof candidate !== 'object') return false;
-  const rec = candidate as Record<string, unknown>;
-  return typeof rec.get === 'function' && typeof rec.put === 'function';
-}
-
-function extractKvFromContext(ctx: { userId: string }): KvNamespaceLike | null {
-  const raw = ctx as unknown as Record<string, unknown>;
-  const directCandidates = [raw.kv, raw.store, raw.PET_KV, raw.KV];
-  for (const item of directCandidates) {
-    if (isKvLike(item)) return item;
-  }
-  if (raw.env && typeof raw.env === 'object') {
-    const envRec = raw.env as Record<string, unknown>;
-    for (const val of Object.values(envRec)) {
-      if (isKvLike(val)) return val;
-    }
-  }
-  return null;
-}
-
-function getWorkersCache(): CacheLike | null {
-  const g = globalThis as unknown as {
-    caches?: { default?: CacheLike };
-  };
-  if (g.caches && g.caches.default) {
-    return g.caches.default;
-  }
-  return null;
-}
-
-function buildStorageKey(userId: string): string {
-  return `pet_care_game_v1:${userId || 'default'}`;
-}
-
-function buildCacheUrl(userId: string): string {
-  return `https://pet-care-store.internal/v1/${encodeURIComponent(userId || 'default')}`;
-}
-
-function deriveMood(energy: number, affection: number): string {
+function deriveMoodLabel(energy: number, affection: number): string {
   if (energy >= 80 && affection >= 80) return '元氣滿滿・超級撒嬌';
   if (energy >= 70) return '活力充沛・心情愉快';
   if (energy >= 40) return '悠閒放鬆・期待互動';
   if (energy >= 20) return '肚子微餓・想吃點心';
   return '昏昏欲睡・急需補充能量';
-}
-
-function createInitialCareStore(userId: string): PetCareStore {
-  const nowIso = new Date().toISOString();
-  return {
-    userId,
-    energy: 75,
-    affection: 60,
-    mood: deriveMood(75, 60),
-    totalFedCount: 0,
-    totalGamesPlayed: 0,
-    lastFedAt: null,
-    lastGameAt: null,
-    updatedAt: nowIso,
-    history: [],
-  };
-}
-
-function sanitizeCareStore(raw: unknown, userId: string): PetCareStore {
-  if (!raw || typeof raw !== 'object') {
-    return createInitialCareStore(userId);
-  }
-  const obj = raw as Record<string, unknown>;
-  const nowIso = new Date().toISOString();
-  const energy = clampStat(asNumberOrFallback(obj.energy, 75));
-  const affection = clampStat(asNumberOrFallback(obj.affection, 60));
-  const rawHistory = Array.isArray(obj.history) ? obj.history : [];
-  const history: CareLogEntry[] = [];
-
-  for (const item of rawHistory.slice(-20)) {
-    if (!item || typeof item !== 'object') continue;
-    const h = item as Record<string, unknown>;
-    const entryType = asTrimmedString(h.type) === 'game' ? 'game' : 'feed';
-    history.push({
-      id: asTrimmedString(h.id) || crypto.randomUUID().slice(0, 8),
-      type: entryType,
-      itemOrGame: asTrimmedString(h.itemOrGame) || '互動',
-      energyDelta: Math.round(asNumberOrFallback(h.energyDelta, 0)),
-      affectionDelta: Math.round(asNumberOrFallback(h.affectionDelta, 0)),
-      energyAfter: clampStat(asNumberOrFallback(h.energyAfter, energy)),
-      affectionAfter: clampStat(asNumberOrFallback(h.affectionAfter, affection)),
-      summary: asTrimmedString(h.summary) || '',
-      timestamp: asTrimmedString(h.timestamp) || nowIso,
-    });
-  }
-
-  return {
-    userId: asTrimmedString(obj.userId) || userId,
-    energy,
-    affection,
-    mood: asTrimmedString(obj.mood) || deriveMood(energy, affection),
-    totalFedCount: Math.max(0, Math.round(asNumberOrFallback(obj.totalFedCount, 0))),
-    totalGamesPlayed: Math.max(0, Math.round(asNumberOrFallback(obj.totalGamesPlayed, 0))),
-    lastFedAt: asTrimmedString(obj.lastFedAt) || null,
-    lastGameAt: asTrimmedString(obj.lastGameAt) || null,
-    updatedAt: asTrimmedString(obj.updatedAt) || nowIso,
-    history,
-  };
-}
-
-async function loadCareStore(userId: string, ctx: { userId: string }): Promise<PetCareStore> {
-  const key = buildStorageKey(userId);
-  const kv = extractKvFromContext(ctx);
-  if (kv) {
-    try {
-      const rawText = await kv.get(key);
-      if (rawText) {
-        const parsed = sanitizeCareStore(JSON.parse(rawText), userId);
-        CARE_MEMORY_STORE.set(userId, parsed);
-        return parsed;
-      }
-    } catch {
-      // fallback to cache or memory
-    }
-  }
-
-  const cache = getWorkersCache();
-  if (cache) {
-    try {
-      const cachedRes = await cache.match(buildCacheUrl(userId));
-      if (cachedRes) {
-        const rawText = await cachedRes.text();
-        const parsed = sanitizeCareStore(JSON.parse(rawText), userId);
-        CARE_MEMORY_STORE.set(userId, parsed);
-        return parsed;
-      }
-    } catch {
-      // fallback to memory
-    }
-  }
-
-  const existing = CARE_MEMORY_STORE.get(userId);
-  if (existing) {
-    return existing;
-  }
-
-  const initial = createInitialCareStore(userId);
-  await saveCareStore(initial, ctx);
-  return initial;
-}
-
-async function saveCareStore(store: PetCareStore, ctx: { userId: string }): Promise<void> {
-  store.mood = deriveMood(store.energy, store.affection);
-  store.updatedAt = new Date().toISOString();
-  store.history = store.history.slice(-20);
-  CARE_MEMORY_STORE.set(store.userId, store);
-  const serialized = JSON.stringify(store);
-
-  const cache = getWorkersCache();
-  if (cache) {
-    try {
-      const res = new Response(serialized, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'max-age=31536000',
-        },
-      });
-      await cache.put(buildCacheUrl(store.userId), res);
-    } catch {
-      // ignore cache failure
-    }
-  }
-
-  const kv = extractKvFromContext(ctx);
-  if (kv) {
-    try {
-      await kv.put(buildStorageKey(store.userId), serialized);
-    } catch {
-      // ignore kv failure
-    }
-  }
 }
 
 function resolveSnackId(input: string): SnackId {
@@ -318,7 +111,7 @@ export const petCareGamePlugin: PluginTool = {
   declaration: {
     name: 'manage_pet_care_game',
     description:
-      '管理桌寵的餵食點心與互動小遊戲狀態。支援查詢目前活力值(0-100)、好感度与互動紀錄(status)、餵食點心如小魚乾/草莓蛋糕/特調咖啡(feed)、以及結算猜拳大作戰或點擊接愛心小遊戲(play_game)以補充桌寵活力與好感度。',
+      '管理桌寵的餵食點心與互動小遊戲，並直接同步雲端主狀態（活力值、好感度、心情與無聊度）。支援查詢狀態(status)、餵食點心如小魚乾/草莓蛋糕/特調咖啡(feed)、以及進行猜拳大作戰或點擊接愛心小遊戲(play_game)。',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -346,56 +139,47 @@ export const petCareGamePlugin: PluginTool = {
           type: 'STRING',
           description: '小遊戲得分或接到的愛心數量（選填，正整數字串，例如 "12"）',
         },
-        sync_energy: {
-          type: 'STRING',
-          description: '選填，若前端已有最新活力值(0-100)可傳入進行同步校準。',
-        },
-        sync_affection: {
-          type: 'STRING',
-          description: '選填，若前端已有最新好感度(0-100)可傳入進行同步校準。',
-        },
       },
       required: ['action'],
     },
   },
-  async execute(args: Record<string, unknown>, ctx: { userId: string }): Promise<Record<string, unknown>> {
-    const userId = asTrimmedString(ctx?.userId) || 'default_user';
-    const action = asTrimmedString(args.action).toLowerCase() || 'status';
-
-    if (!['status', 'feed', 'play_game'].includes(action)) {
-      return {
-        ok: false,
-        error: '無效的 action 參數，請使用 status、feed 或 play_game。',
-      };
+  async execute(args: Record<string, unknown>, ctx: PluginContext): Promise<Record<string, unknown>> {
+    const userId = asTrimmedString(ctx?.userId) || 'zero_main';
+    const stateSvc = ctx?.stateSvc;
+    if (!stateSvc) {
+      return { ok: false, error: '系統未注入 StateService，無法同步主狀態。' };
     }
 
-    const store = await loadCareStore(userId, ctx);
+    const action = asTrimmedString(args.action).toLowerCase() || 'status';
+    if (!['status', 'feed', 'play_game'].includes(action)) {
+      return { ok: false, error: '無效的 action 參數，請使用 status、feed 或 play_game。' };
+    }
+
+    const [mainState, careMeta] = await Promise.all([
+      stateSvc.getPetState(userId),
+      stateSvc.getCareMeta(userId),
+    ]);
+
     const now = new Date();
     const nowMs = now.getTime();
     const nowIso = now.toISOString();
-
-    if (args.sync_energy !== undefined && args.sync_energy !== '') {
-      store.energy = clampStat(asNumberOrFallback(args.sync_energy, store.energy));
-    }
-    if (args.sync_affection !== undefined && args.sync_affection !== '') {
-      store.affection = clampStat(asNumberOrFallback(args.sync_affection, store.affection));
-    }
+    const prevExtra = mainState.extra && typeof mainState.extra === 'object' ? mainState.extra : {};
 
     if (action === 'status') {
-      await saveCareStore(store, ctx);
       return {
         ok: true,
         action: 'status',
+        pet_state: mainState,
         pet_care: {
-          energy: store.energy,
-          affection: store.affection,
-          mood: store.mood,
-          totalFedCount: store.totalFedCount,
-          totalGamesPlayed: store.totalGamesPlayed,
-          lastFedAt: store.lastFedAt,
-          lastGameAt: store.lastGameAt,
+          energy: mainState.energy,
+          affection: mainState.affection,
+          mood: deriveMoodLabel(mainState.energy, mainState.affection),
+          totalFedCount: careMeta.totalFedCount,
+          totalGamesPlayed: careMeta.totalGamesPlayed,
+          lastFedAt: careMeta.lastFedAt,
+          lastGameAt: careMeta.lastGameAt,
           availableSnacks: Object.values(SNACK_CATALOG),
-          recentHistory: store.history.slice(-8),
+          recentHistory: careMeta.history.slice(-8),
         },
       };
     }
@@ -404,7 +188,7 @@ export const petCareGamePlugin: PluginTool = {
       const rawSnack = asTrimmedString(args.snack_id ?? args.snack ?? 'dried_fish');
       const snackId = resolveSnackId(rawSnack);
       const snack = SNACK_CATALOG[snackId];
-      const remainCd = getRemainingCooldownSec(store.lastFedAt, snack.cooldownSec, nowMs);
+      const remainCd = getRemainingCooldownSec(careMeta.lastFedAt, snack.cooldownSec, nowMs);
 
       if (remainCd > 0) {
         return {
@@ -414,29 +198,41 @@ export const petCareGamePlugin: PluginTool = {
           remainingCooldownSec: remainCd,
           snack,
           message: `桌寵剛吃完點心還在細細品嚐中～再過 ${remainCd} 秒就可以再餵食囉！`,
+          pet_state: mainState,
           pet_care: {
-            energy: store.energy,
-            affection: store.affection,
-            mood: store.mood,
+            energy: mainState.energy,
+            affection: mainState.affection,
+            mood: deriveMoodLabel(mainState.energy, mainState.affection),
           },
         };
       }
 
-      const beforeEnergy = store.energy;
-      const beforeAffection = store.affection;
-      const wasFull = beforeEnergy >= 100;
+      const beforeEnergy = clampStat(mainState.energy);
+      const beforeAffection = clampStat(mainState.affection);
+      const nextEnergy = clampStat(beforeEnergy + snack.energyGain);
+      const nextAffection = clampStat(beforeAffection + snack.affectionGain);
+      const actualEnergyDelta = nextEnergy - beforeEnergy;
+      const actualAffectionDelta = nextAffection - beforeAffection;
 
-      store.energy = clampStat(beforeEnergy + snack.energyGain);
-      store.affection = clampStat(beforeAffection + snack.affectionGain);
-      store.totalFedCount += 1;
-      store.lastFedAt = nowIso;
+      const summary =
+        beforeEnergy >= 100
+          ? `餵食了${snack.emoji}${snack.name}（活力已滿 100，好感度 +${actualAffectionDelta}）`
+          : `餵食了${snack.emoji}${snack.name}（活力 +${actualEnergyDelta} → ${nextEnergy}，好感度 +${actualAffectionDelta} → ${nextAffection}）`;
 
-      const actualEnergyDelta = store.energy - beforeEnergy;
-      const actualAffectionDelta = store.affection - beforeAffection;
-
-      const summary = wasFull
-        ? `餵食了${snack.emoji}${snack.name}（活力已滿 100，好感度 +${actualAffectionDelta}）`
-        : `餵食了${snack.emoji}${snack.name}（活力 +${actualEnergyDelta} → ${store.energy}，好感度 +${actualAffectionDelta} → ${store.affection}）`;
+      const nextMainState: PetState = {
+        ...mainState,
+        energy: nextEnergy,
+        affection: nextAffection,
+        mood: 'happy',
+        status_note: `食完${snack.name}，元氣滿滿！`,
+        last_active_at: nowIso,
+        updated_at: nowIso,
+        extra: {
+          ...prevExtra,
+          boredom: 0,
+          activity: `津津有味咁嘆緊${snack.name} ${snack.emoji}`,
+        },
+      };
 
       const entry: CareLogEntry = {
         id: `feed-${crypto.randomUUID().slice(0, 8)}`,
@@ -444,13 +240,25 @@ export const petCareGamePlugin: PluginTool = {
         itemOrGame: `${snack.emoji} ${snack.name}`,
         energyDelta: actualEnergyDelta,
         affectionDelta: actualAffectionDelta,
-        energyAfter: store.energy,
-        affectionAfter: store.affection,
+        energyAfter: nextEnergy,
+        affectionAfter: nextAffection,
         summary,
         timestamp: nowIso,
       };
-      store.history.push(entry);
-      await saveCareStore(store, ctx);
+
+      const nextCareMeta = {
+        ...careMeta,
+        totalFedCount: careMeta.totalFedCount + 1,
+        lastFedAt: nowIso,
+        history: [...careMeta.history, entry].slice(-20),
+        updatedAt: nowIso,
+      };
+
+      await Promise.all([
+        stateSvc.savePetState(userId, nextMainState),
+        stateSvc.saveCareMeta(userId, nextCareMeta),
+        stateSvc.registerActiveUser(userId),
+      ]);
 
       return {
         ok: true,
@@ -459,12 +267,13 @@ export const petCareGamePlugin: PluginTool = {
         snack,
         flavorText: snack.flavorText,
         summary,
+        pet_state: nextMainState,
         pet_care: {
-          energy: store.energy,
-          affection: store.affection,
-          mood: store.mood,
-          totalFedCount: store.totalFedCount,
-          lastFedAt: store.lastFedAt,
+          energy: nextEnergy,
+          affection: nextAffection,
+          mood: deriveMoodLabel(nextEnergy, nextAffection),
+          totalFedCount: nextCareMeta.totalFedCount,
+          lastFedAt: nextCareMeta.lastFedAt,
         },
       };
     }
@@ -472,7 +281,7 @@ export const petCareGamePlugin: PluginTool = {
     // action === 'play_game'
     const rawGame = asTrimmedString(args.game_type ?? args.game ?? 'rps');
     const gameType = resolveGameType(rawGame);
-    const remainGameCd = getRemainingCooldownSec(store.lastGameAt, GAME_COOLDOWN_SEC, nowMs);
+    const remainGameCd = getRemainingCooldownSec(careMeta.lastGameAt, GAME_COOLDOWN_SEC, nowMs);
 
     if (remainGameCd > 0) {
       return {
@@ -482,23 +291,26 @@ export const petCareGamePlugin: PluginTool = {
         remainingCooldownSec: remainGameCd,
         gameType,
         message: `桌寵剛跑跳完正在喘口氣～再過 ${remainGameCd} 秒就可以再玩一場囉！`,
+        pet_state: mainState,
         pet_care: {
-          energy: store.energy,
-          affection: store.affection,
-          mood: store.mood,
+          energy: mainState.energy,
+          affection: mainState.affection,
+          mood: deriveMoodLabel(mainState.energy, mainState.affection),
         },
       };
     }
 
-    const beforeEnergy = store.energy;
-    const beforeAffection = store.affection;
+    const beforeEnergy = clampStat(mainState.energy);
+    const beforeAffection = clampStat(mainState.affection);
     let energyReward = 10;
     let affectionReward = 3;
     let detailText = '';
     let gameTitle = '';
+    let activityText = '同主人玩緊互動小遊戲，興奮搖尾巴 🎲';
 
     if (gameType === 'rps') {
       gameTitle = '✊✌️🖐️ 猜拳大作戰';
+      activityText = '同主人玩緊猜拳大作戰，興奮搖尾巴 🎲';
       const explicitResult = asTrimmedString(args.game_result).toLowerCase();
       const choices: RpsChoice[] = ['rock', 'paper', 'scissors'];
       const labelMap: Record<RpsChoice, string> = {
@@ -539,20 +351,33 @@ export const petCareGamePlugin: PluginTool = {
       }
     } else {
       gameTitle = '💖 點擊接愛心挑戰';
-      const rawScore = Math.max(1, Math.min(50, Math.round(asNumberOrFallback(args.score, 10))));
+      activityText = '蹦蹦跳跳接住滿滿愛心 💖';
+      const rawScore = Math.max(0, Math.min(50, Math.round(asNumberOrFallback(args.score, 10))));
       energyReward = Math.min(30, Math.max(8, Math.round(rawScore * 2)));
-      affectionReward = Math.min(8, Math.max(2, Math.ceil(rawScore / 3)));
+      affectionReward = Math.min(8, Math.max(2, Math.ceil((rawScore || 1) / 3)));
       detailText = `主人在限時挑戰中接到了 ${rawScore} 顆愛心！滿滿的心意讓桌寵活力大爆發！`;
     }
 
-    store.energy = clampStat(beforeEnergy + energyReward);
-    store.affection = clampStat(beforeAffection + affectionReward);
-    store.totalGamesPlayed += 1;
-    store.lastGameAt = nowIso;
+    const nextEnergy = clampStat(beforeEnergy + energyReward);
+    const nextAffection = clampStat(beforeAffection + affectionReward);
+    const actualEnergyDelta = nextEnergy - beforeEnergy;
+    const actualAffectionDelta = nextAffection - beforeAffection;
+    const summary = `遊玩「${gameTitle}」（活力 +${actualEnergyDelta} → ${nextEnergy}，好感度 +${actualAffectionDelta} → ${nextAffection}）`;
 
-    const actualEnergyDelta = store.energy - beforeEnergy;
-    const actualAffectionDelta = store.affection - beforeAffection;
-    const summary = `遊玩「${gameTitle}」（活力 +${actualEnergyDelta} → ${store.energy}，好感度 +${actualAffectionDelta} → ${store.affection}）`;
+    const nextMainState: PetState = {
+      ...mainState,
+      energy: nextEnergy,
+      affection: nextAffection,
+      mood: 'happy',
+      status_note: `啱啱同主人玩完「${gameTitle}」，超開心！`,
+      last_active_at: nowIso,
+      updated_at: nowIso,
+      extra: {
+        ...prevExtra,
+        boredom: 0,
+        activity: activityText,
+      },
+    };
 
     const entry: CareLogEntry = {
       id: `game-${crypto.randomUUID().slice(0, 8)}`,
@@ -560,13 +385,25 @@ export const petCareGamePlugin: PluginTool = {
       itemOrGame: gameTitle,
       energyDelta: actualEnergyDelta,
       affectionDelta: actualAffectionDelta,
-      energyAfter: store.energy,
-      affectionAfter: store.affection,
+      energyAfter: nextEnergy,
+      affectionAfter: nextAffection,
       summary,
       timestamp: nowIso,
     };
-    store.history.push(entry);
-    await saveCareStore(store, ctx);
+
+    const nextCareMeta = {
+      ...careMeta,
+      totalGamesPlayed: careMeta.totalGamesPlayed + 1,
+      lastGameAt: nowIso,
+      history: [...careMeta.history, entry].slice(-20),
+      updatedAt: nowIso,
+    };
+
+    await Promise.all([
+      stateSvc.savePetState(userId, nextMainState),
+      stateSvc.saveCareMeta(userId, nextCareMeta),
+      stateSvc.registerActiveUser(userId),
+    ]);
 
     return {
       ok: true,
@@ -576,12 +413,13 @@ export const petCareGamePlugin: PluginTool = {
       gameTitle,
       detailText,
       summary,
+      pet_state: nextMainState,
       pet_care: {
-        energy: store.energy,
-        affection: store.affection,
-        mood: store.mood,
-        totalGamesPlayed: store.totalGamesPlayed,
-        lastGameAt: store.lastGameAt,
+        energy: nextEnergy,
+        affection: nextAffection,
+        mood: deriveMoodLabel(nextEnergy, nextAffection),
+        totalGamesPlayed: nextCareMeta.totalGamesPlayed,
+        lastGameAt: nextCareMeta.lastGameAt,
       },
     };
   },
