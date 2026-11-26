@@ -3,8 +3,20 @@ export const UI_BODY: string = `
     <div class="pet-info">
       <div class="avatar" id="petEmoji">🐱</div>
       <div class="pet-meta">
-        <div class="title" id="petTitle">Gemini 桌寵</div>
-        <div class="stats" id="petStats">好感度 -- ｜ 活力 --</div>
+        <div class="title-row">
+          <div class="title" id="petTitle">Gemini 桌寵</div>
+          <span class="pet-activity-badge" id="petActivityBadge" title="當前小動作（點擊可立即同步生理時鐘狀態）">🐾 <span id="petActivityText">伸懶腰中</span></span>
+        </div>
+        <div class="stats" id="petStats">好感度 -- ｜ 活力 -- ｜ 無聊度 --</div>
+        <div class="pet-extra-bar" id="petExtraBar">
+          <div class="boredom-meter" id="petBoredomChip" title="無聊度（0-100，每小時無互動 +8，互動後歸零；點擊可同步狀態）">
+            <span class="boredom-label">🥱 無聊度 <strong id="petBoredomText">0%</strong></span>
+            <div class="boredom-track">
+              <div class="boredom-fill low" id="petBoredomFill" style="width: 0%;"></div>
+            </div>
+          </div>
+          <span class="status-note-text" id="petStatusNote"></span>
+        </div>
       </div>
     </div>
     <div class="header-actions">
