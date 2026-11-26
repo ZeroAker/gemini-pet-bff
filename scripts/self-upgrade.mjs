@@ -15,6 +15,22 @@ const PROTECTED_CORE_TOOLS = [
 const MODEL_TIMEOUT_MS = 10 * 60 * 1000; // 單次模型請求最多 10 分鐘
 const HEARTBEAT_INTERVAL_MS = 20 * 1000; // 每 20 秒回寫心跳進度
 const MAX_HEAL_ATTEMPTS = 3; // 驗證或編譯失敗時，最多自動修復 3 輪
+const MAX_TIMEOUT_RETRIES = 1; // 同一模型逾時後最多原地重試 1 次（合共 2 次機會）
+const TIMEOUT_RETRY_DELAY_MS = 5 * 1000; // 逾時重試前冷卻 5 秒
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isTimeoutError(err) {
+  const name = err?.name || '';
+  const msg = err instanceof Error ? err.message : String(err);
+  const causeCode = err?.cause?.code || err?.code || '';
+  return (
+    name === 'TimeoutError' ||
+    name === 'AbortError' ||
+    ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ETIMEDOUT'].includes(causeCode) ||
+    /timeout|timed out|aborted/i.test(msg)
+  );
+}
 
 const userId = (process.env.INPUT_USER_ID || 'zero_main').trim();
 const instruction = (process.env.INPUT_INSTRUCTION || '').trim();
@@ -513,12 +529,7 @@ function buildSystemPrompt() {
 async function callModelWithFallback(modelsOrder, systemPrompt, contents, attemptNum) {
   const errors = [];
 
-  for (const model of modelsOrder) {
-    await logStep(
-      'generating_code',
-      `第 ${attemptNum}/${MAX_HEAL_ATTEMPTS} 輪：呼叫 ${model}（SSE 串流）...`
-    );
-
+  modelLoop: for (const model of modelsOrder) {
     const generationConfig = model.startsWith('gemini-4')
       ? {
           responseMimeType: 'application/json',
@@ -529,51 +540,82 @@ async function callModelWithFallback(modelsOrder, systemPrompt, contents, attemp
           temperature: 0.2,
         };
 
-    const progress = { thoughtChars: 0, outputChars: 0, startedAt: Date.now() };
-    const heartbeatTimer = setInterval(() => {
-      const sec = Math.floor((Date.now() - progress.startedAt) / 1000);
-      void updateHeartbeat(
-        `[輪次 ${attemptNum}/${MAX_HEAL_ATTEMPTS}] ${model} 執行中（${sec}s｜思考 ${progress.thoughtChars} 字｜輸出 ${progress.outputChars} 字）`
+    for (let retry = 0; retry <= MAX_TIMEOUT_RETRIES; retry += 1) {
+      const retryTag = retry > 0 ? `（逾時重試 ${retry}/${MAX_TIMEOUT_RETRIES}）` : '';
+      await logStep(
+        'generating_code',
+        `第 ${attemptNum}/${MAX_HEAL_ATTEMPTS} 輪：呼叫 ${model}${retryTag}（SSE 串流）...`
       );
-    }, HEARTBEAT_INTERVAL_MS);
 
-    try {
-      const res = await fetch(buildStreamEndpoint(model), {
-        method: 'POST',
-        signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents,
-          generationConfig,
-        }),
-      });
-
-      if (res.ok && res.body) {
-        const rawText = await readSseStream(res, progress);
-        if (!rawText) {
-          throw new Error(`${model} 串流結束但未回傳有效內容`);
-        }
-        await logStep(
-          'code_generated',
-          `${model} 已生成方案（思考 ${progress.thoughtChars} 字，輸出 ${progress.outputChars} 字）`
+      const progress = { thoughtChars: 0, outputChars: 0, startedAt: Date.now() };
+      const heartbeatTimer = setInterval(() => {
+        const sec = Math.floor((Date.now() - progress.startedAt) / 1000);
+        void updateHeartbeat(
+          `[輪次 ${attemptNum}/${MAX_HEAL_ATTEMPTS}] ${model}${retryTag} 執行中（${sec}s｜思考 ${progress.thoughtChars} 字｜輸出 ${progress.outputChars} 字）`
         );
-        return { rawText, modelUsed: model };
-      }
+      }, HEARTBEAT_INTERVAL_MS);
 
-      const errText = await res.text();
-      errors.push(`[${model} -> ${res.status}] ${errText.slice(0, 150)}`);
-      await logStep('model_fallback', `${model} 回傳 ${res.status}，切換備援模型`);
+      try {
+        const res = await fetch(buildStreamEndpoint(model), {
+          method: 'POST',
+          signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents,
+            generationConfig,
+          }),
+        });
 
-      if (res.status !== 403 && res.status !== 404 && res.status !== 429) {
+        if (res.ok && res.body) {
+          const rawText = await readSseStream(res, progress);
+          if (!rawText) {
+            throw new Error(`${model} 串流結束但未回傳有效內容`);
+          }
+          await logStep(
+            'code_generated',
+            `${model}${retryTag} 已生成方案（思考 ${progress.thoughtChars} 字，輸出 ${progress.outputChars} 字）`
+          );
+          return { rawText, modelUsed: model };
+        }
+
+        const errText = await res.text();
+        errors.push(`[${model}${retryTag} -> ${res.status}] ${errText.slice(0, 150)}`);
+
+        // HTTP 408 / 504 屬於伺服端逾時：先原地重試同一模型
+        if ((res.status === 408 || res.status === 504) && retry < MAX_TIMEOUT_RETRIES) {
+          await logStep(
+            'model_timeout_retry',
+            `${model} 伺服端逾時 (${res.status})，${TIMEOUT_RETRY_DELAY_MS / 1000} 秒後重試同一模型（${retry + 1}/${MAX_TIMEOUT_RETRIES}）...`
+          );
+          await sleep(TIMEOUT_RETRY_DELAY_MS);
+          continue;
+        }
+
+        await logStep('model_fallback', `${model} 回傳 ${res.status}，切換備援模型`);
+
+        if (![403, 404, 408, 429, 500, 502, 503, 504].includes(res.status)) {
+          break modelLoop;
+        }
         break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`[${model}${retryTag} 異常] ${msg}`);
+
+        if (isTimeoutError(err) && retry < MAX_TIMEOUT_RETRIES) {
+          await logStep(
+            'model_timeout_retry',
+            `${model} 發生逾時 (${msg.slice(0, 60)})，${TIMEOUT_RETRY_DELAY_MS / 1000} 秒後重試同一模型（${retry + 1}/${MAX_TIMEOUT_RETRIES}）...`
+          );
+          await sleep(TIMEOUT_RETRY_DELAY_MS);
+          continue;
+        }
+
+        await logStep('model_fallback', `${model} 發生異常 (${msg.slice(0, 80)})，切換備援`);
+        break;
+      } finally {
+        clearInterval(heartbeatTimer);
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`[${model} 異常] ${msg}`);
-      await logStep('model_fallback', `${model} 發生異常 (${msg.slice(0, 80)})，切換備援`);
-    } finally {
-      clearInterval(heartbeatTimer);
     }
   }
 
