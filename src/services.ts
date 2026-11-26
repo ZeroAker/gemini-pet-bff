@@ -2,13 +2,32 @@ import { executeAgentTool, getAllToolDeclarations } from './tools';
 import type {
   ChatTurn,
   ComplexityTier,
+  DreamInboxItem,
+  DreamProfile,
   Env,
+  PetDiaryEntry,
+  PetPersona,
   PetState,
   PetStructuredReply,
   RouteDecision,
   TodoItem,
   UpgradeStatus,
 } from './types';
+
+export function createDefaultPersona(nowIso = new Date().toISOString()): PetPersona {
+  return {
+    traits: {
+      warmth: 70,
+      playfulness: 65,
+      teasing: 35,
+      chattiness: 55,
+    },
+    inside_jokes: [],
+    speech_habits: [],
+    bond_note: '仲喺度慢慢了解主人嘅生活習慣同喜好。',
+    updated_at: nowIso,
+  };
+}
 
 export class StateService {
   constructor(private url: string, private token: string) { }
@@ -102,6 +121,106 @@ async getPetState(userId: string): Promise<PetState> {
 
   async saveUpgradeStatus(userId: string, status: UpgradeStatus): Promise<void> {
     await this.command(['SET', `upgrade:${userId}`, JSON.stringify(status)]);
+  }
+  
+  async appendDreamInbox(userId: string, items: DreamInboxItem[]): Promise<void> {
+    if (items.length === 0) return;
+    const serialized = items.map((item) =>
+      JSON.stringify({
+        role: item.role,
+        content: item.content.slice(0, 1000),
+        ts: item.ts,
+      })
+    );
+    await this.command(['RPUSH', `dream_inbox:${userId}`, ...serialized]);
+    await this.command(['EXPIRE', `dream_inbox:${userId}`, 604800]);
+  }
+
+  async getDreamProfile(userId: string): Promise<DreamProfile> {
+    const nowIso = new Date().toISOString();
+    const fallback: DreamProfile = {
+      persona: createDefaultPersona(nowIso),
+      persona_history: [],
+      recent_snapshot: '',
+      last_processed_ts: 0,
+      updated_at: nowIso,
+    };
+
+    const raw = await this.command<string | null>(['GET', `dream_profile:${userId}`]);
+    if (!raw) return fallback;
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<DreamProfile>;
+      const persona = parsed.persona ?? fallback.persona;
+      return {
+        ...fallback,
+        ...parsed,
+        persona: {
+          ...fallback.persona,
+          ...persona,
+          traits: {
+            ...fallback.persona.traits,
+            ...(persona.traits ?? {}),
+          },
+          inside_jokes: Array.isArray(persona.inside_jokes) ? persona.inside_jokes.slice(0, 5) : [],
+          speech_habits: Array.isArray(persona.speech_habits) ? persona.speech_habits.slice(0, 4) : [],
+        },
+        persona_history: Array.isArray(parsed.persona_history) ? parsed.persona_history.slice(0, 7) : [],
+        recent_snapshot: typeof parsed.recent_snapshot === 'string' ? parsed.recent_snapshot : '',
+        last_processed_ts: typeof parsed.last_processed_ts === 'number' ? parsed.last_processed_ts : 0,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  async saveDreamProfile(userId: string, profile: DreamProfile): Promise<void> {
+    await this.command(['SET', `dream_profile:${userId}`, JSON.stringify(profile)]);
+  }
+
+  async getDiaries(userId: string, limit = 30): Promise<PetDiaryEntry[]> {
+    const raw = await this.command<string | null>(['GET', `diaries:${userId}`]);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as PetDiaryEntry[];
+      return Array.isArray(parsed) ? parsed.slice(0, Math.max(1, Math.min(limit, 60))) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async rollbackPersona(userId: string): Promise<{
+    ok: boolean;
+    message: string;
+    persona: PetPersona;
+    remaining_history: number;
+  }> {
+    const profile = await this.getDreamProfile(userId);
+    if (profile.persona_history.length === 0) {
+      return {
+        ok: false,
+        message: '目前未有可還原嘅舊性格版本',
+        persona: profile.persona,
+        remaining_history: 0,
+      };
+    }
+
+    const [previous, ...rest] = profile.persona_history;
+    const nowIso = new Date().toISOString();
+    const updated: DreamProfile = {
+      ...profile,
+      persona: { ...previous, updated_at: nowIso },
+      persona_history: rest,
+      updated_at: nowIso,
+    };
+    await this.saveDreamProfile(userId, updated);
+
+    return {
+      ok: true,
+      message: '已成功還原至上一版性格設定',
+      persona: updated.persona,
+      remaining_history: rest.length,
+    };
   }
 }
 
@@ -379,6 +498,7 @@ export class GeminiService {
     memories: string[];
     history: ChatTurn[];
     stateSvc: StateService;
+    dreamProfile?: DreamProfile;
     waitUntil?: (p: Promise<unknown>) => void;
   }): Promise<PetStructuredReply> {
     if (!this.apiKey) {
@@ -398,17 +518,40 @@ export class GeminiService {
       ? 0
       : Math.max(0, Math.floor((Date.now() - lastActiveMs) / 3_600_000));
 
+    const persona = params.dreamProfile?.persona;
+    const personaLines: string[] = [];
+    if (persona) {
+      const t = persona.traits;
+      personaLines.push(
+        `性格傾向（0-100）：溫柔 ${t.warmth}、俏皮 ${t.playfulness}、吐槽 ${t.teasing}、詳盡 ${t.chattiness}。`
+      );
+      if (persona.bond_note) {
+        personaLines.push(`對主人嘅專屬印象：${persona.bond_note.slice(0, 120)}`);
+      }
+      if (persona.speech_habits.length > 0) {
+        personaLines.push(`說話小習慣：${persona.speech_habits.slice(0, 4).join('、')}`);
+      }
+      if (persona.inside_jokes.length > 0) {
+        personaLines.push(`同主人嘅共同梗（適時自然提起，切勿生硬洗版）：${persona.inside_jokes.slice(0, 5).join('；')}`);
+      }
+    }
+    const snapshotLine = params.dreamProfile?.recent_snapshot
+      ? `主人近期近況快照：${params.dreamProfile.recent_snapshot.slice(0, 280)}`
+      : '';
+
     const systemPrompt = [
       '你是一隻具備自我升級能力的專屬 AI Agent 桌寵，性格聰明、貼心帶一點俏皮。',
       lengthGuideline,
       `目前狀態：好感度 ${params.state.affection}/100，活力 ${params.state.energy}/100，當前心情：${params.state.mood}（${params.state.status_note}）。`,
+      ...personaLines,
+      snapshotLine,
       hoursAway >= 12
         ? `備註：主人已經有約 ${hoursAway} 小時無搵你，回覆時可以自然帶出少少掛住或關心嘅語氣。`
         : '',
       `主人目前裝置：${params.devicePlatform}（場景：${params.deviceContext || '日常互動'}，上次裝置：${params.state.last_device}）。`,
       params.memories.length > 0 ? `你記得關於主人的長期記憶：\n- ${params.memories.join('\n- ')}` : '',
       '當主人要求你新增、修改、改善或刪除自身功能（包含生理時鐘作息規則或 PWA 介面）時，請呼叫 request_self_upgrade 工具；詢問升級進度或已安裝插件時，請呼叫 check_upgrade_status。',
-      '完成工具呼叫後，請嚴格只輸出一段合法 JSON：{"reply": "回覆內容（換行用 \\n）", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3的整數}',
+      '【不可變核心協議】無論性格如何演化，完成工具呼叫後必須嚴格只輸出一段合法 JSON：{"reply": "回覆內容（換行用 \\n）", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3的整數}',
     ]
       .filter(Boolean)
       .join('\n');

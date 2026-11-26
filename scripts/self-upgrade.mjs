@@ -922,6 +922,8 @@ function buildSystemPrompt() {
     '   - src/ui.ts 必須匯出完整 HTML 字串 `export const CHAT_HTML: string`（可拆檔到 src/ui/*.ts 再由 src/ui.ts 相對 import 組裝）。',
     '   - 組裝後的 HTML 必須保留 `/v1/pet/interact`、`/v1/pet/upgrade/status`、Token 設定彈窗與 localStorage (`pet_bff_token`, `pet_user_id`)。',
     '   - 模板字串內嵌 JS 優先用單引號與字串拼接，避免反引號或 `${` 跳脫失誤。',
+    '8. src/plugins/lifecycle.ts 為每小時 Cron 生理時鐘規則檔，嚴禁刪除且必須保留 export function computeNextLifecycleState(state: PetState, ctx: LifecycleContext): PetState。',
+    '9. 後端已提供以下受 Bearer Token 保護嘅唯讀／互動 API，修改 src/ui.ts 時可直接呼叫：GET /v1/pet/state?uid=...、GET /v1/pet/diaries?uid=...&limit=30、GET /v1/pet/persona?uid=...、POST /v1/pet/persona/rollback?uid=...、POST /v1/pet/dream/trigger?uid=...&force=true。',
     '',
     '【高效多步工作流】',
     '1. 先呼叫 read_file 閱讀與需求直接相關的檔案（若要新增插件先看 src/types.ts 與 src/plugins/registry.ts；若改 UI 先看 src/ui.ts 或 src/ui/*）。',

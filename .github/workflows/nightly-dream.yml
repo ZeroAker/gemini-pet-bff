@@ -1,0 +1,47 @@
+name: Nightly Dream (Memory & Persona)
+
+on:
+  schedule:
+    - cron: '0 19 * * *' # 每日 03:00 HKT (UTC+8)
+  workflow_dispatch:
+    inputs:
+      user_id:
+        description: '指定單一 User ID（留空則處理所有活躍用戶）'
+        required: false
+        default: ''
+        type: string
+      force:
+        description: '強制重跑（即使當日已發夢；若收件箱為空則改讀近期對話作測試）'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: nightly-dream
+  cancel-in-progress: false
+
+jobs:
+  dream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run nightly dream engine
+        env:
+          GOOGLE_CLOUD_API_KEY: ${{ secrets.GOOGLE_CLOUD_API_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          MEM0_API_KEY: ${{ secrets.MEM0_API_KEY }}
+          GCP_PROJECT_ID: '1031423259598'
+          GCP_LOCATION: 'global'
+          MODEL_DREAMER: 'gemini-4-neon'
+          INPUT_USER_ID: ${{ inputs.user_id }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: node scripts/nightly-dream.mjs

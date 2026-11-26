@@ -93,6 +93,47 @@ export interface UpgradeStatus {
   updated_at: string;
 }
 
+// 發夢記憶整理、日記與性格演化型別
+export interface DreamInboxItem {
+  role: 'user' | 'assistant';
+  content: string;
+  ts: number;
+}
+
+export interface PersonaTraits {
+  warmth: number;      // 貼心溫柔度 0-100
+  playfulness: number; // 俏皮撒嬌度 0-100
+  teasing: number;     // 吐槽幽默度 0-100
+  chattiness: number;  // 話多詳盡度 0-100
+}
+
+export interface PetPersona {
+  traits: PersonaTraits;
+  inside_jokes: string[];
+  speech_habits: string[];
+  bond_note: string;
+  updated_at: string;
+}
+
+export interface PetDiaryEntry {
+  date: string; // YYYY-MM-DD (HKT)
+  mood: PetEmotion;
+  title: string;
+  content: string;
+  highlights: string[];
+  model_used: string;
+  created_at: string;
+}
+
+export interface DreamProfile {
+  persona: PetPersona;
+  persona_history: PetPersona[];
+  recent_snapshot: string;
+  last_dream_date?: string;
+  last_processed_ts: number;
+  updated_at: string;
+}
+
 export interface ToolDeclaration {
   name: string;
   description: string;

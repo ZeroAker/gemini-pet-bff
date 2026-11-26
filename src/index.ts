@@ -102,7 +102,6 @@ app.get('/test-gemini', async (c) => {
   }
 });
 
-// 查詢目前桌寵生理狀態（PWA 開啟時自動同步用）
 app.get('/v1/pet/state', async (c) => {
   const auth = c.req.header('Authorization');
   if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
@@ -114,7 +113,6 @@ app.get('/v1/pet/state', async (c) => {
   return c.json({ ok: true, pet_state: state });
 });
 
-// 手動觸發一次生理時鐘演算（測試驗證用）
 app.post('/v1/pet/lifecycle/tick', async (c) => {
   const auth = c.req.header('Authorization');
   if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
@@ -124,6 +122,97 @@ app.post('/v1/pet/lifecycle/tick', async (c) => {
   const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
   const next = await runLifecycleTick(userId, stateSvc);
   return c.json({ ok: true, pet_state: next });
+});
+
+// 查詢桌寵日記本
+app.get('/v1/pet/diaries', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const userId = c.req.query('uid') || 'zero_main';
+  const limitRaw = Number.parseInt(c.req.query('limit') || '30', 10);
+  const limit = Number.isNaN(limitRaw) ? 30 : limitRaw;
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const diaries = await stateSvc.getDiaries(userId, limit);
+  return c.json({ ok: true, count: diaries.length, diaries });
+});
+
+// 查詢目前性格演化狀態與近期近況快照
+app.get('/v1/pet/persona', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const userId = c.req.query('uid') || 'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const profile = await stateSvc.getDreamProfile(userId);
+  return c.json({
+    ok: true,
+    persona: profile.persona,
+    recent_snapshot: profile.recent_snapshot,
+    last_dream_date: profile.last_dream_date || null,
+    history_count: profile.persona_history.length,
+    updated_at: profile.updated_at,
+  });
+});
+
+// 一鍵還原至上一版性格
+app.post('/v1/pet/persona/rollback', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const userId = c.req.query('uid') || 'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const result = await stateSvc.rollbackPersona(userId);
+  return c.json(result);
+});
+
+// 手動派發一次「發夢」任務至 GitHub Actions（方便即時測試）
+app.post('/v1/pet/dream/trigger', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const token = (c.env.GITHUB_TOKEN || '').trim();
+  const owner = (c.env.GITHUB_OWNER || '').trim();
+  const repo = (c.env.GITHUB_REPO || '').trim();
+  const branch = (c.env.GITHUB_BRANCH || 'main').trim();
+  if (!token || !owner || !repo) {
+    return c.json({ ok: false, error: '尚未設定 GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO' }, 500);
+  }
+
+  const userId = c.req.query('uid') || 'zero_main';
+  const force = c.req.query('force') === 'true' ? 'true' : 'false';
+
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/actions/workflows/nightly-dream.yml/dispatches`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'GeminiPetDreamTrigger/1.0',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ref: branch,
+        inputs: { user_id: userId, force },
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    return c.json({ ok: false, error: `派發失敗 (${res.status}): ${(await res.text()).slice(0, 200)}` }, 502);
+  }
+
+  return c.json({
+    ok: true,
+    status: 'dispatched',
+    actions_url: `https://github.com/${owner}/${repo}/actions/workflows/nightly-dream.yml`,
+  });
 });
 
 app.get('/v1/pet/upgrade/status', async (c) => {
@@ -174,10 +263,11 @@ app.post('/v1/pet/interact', async (c) => {
   }
 
   try {
-    const [state, history, memories] = await Promise.all([
+    const [state, history, memories, dreamProfile] = await Promise.all([
       stateSvc.getPetState(userId),
       stateSvc.getRecentHistory(userId),
       memorySvc.searchMemories(userId, body.input.content),
+      stateSvc.getDreamProfile(userId),
     ]);
 
     const aiResult = await geminiSvc.generateReply({
@@ -188,11 +278,13 @@ app.post('/v1/pet/interact', async (c) => {
       state,
       memories,
       history,
+      dreamProfile,
       stateSvc,
       waitUntil: (p) => c.executionCtx.waitUntil(p),
     });
 
-    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
     const nextState: PetState = {
       ...state,
       affection: Math.min(100, Math.max(0, state.affection + aiResult.affection_delta)),
@@ -214,6 +306,10 @@ app.post('/v1/pet/interact', async (c) => {
         stateSvc.registerActiveUser(userId),
         stateSvc.savePetState(userId, nextState),
         stateSvc.appendHistory(userId, newTurns),
+        stateSvc.appendDreamInbox(userId, [
+          { role: 'user', content: body.input.content, ts: nowMs },
+          { role: 'assistant', content: aiResult.reply, ts: nowMs + 1 },
+        ]),
         memorySvc.addMemory(userId, newTurns),
       ])
     );
