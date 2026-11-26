@@ -896,4 +896,288 @@ export const UI_STYLES: string = `
       transition: transform 0.1s ease;
     }
     .heart-target:active { transform: scale(1.35); }
+    .diary-persona-tabs {
+      display: flex;
+      gap: 8px;
+      background: #121521;
+      padding: 4px;
+      border-radius: 10px;
+      border: 1px solid #282f47;
+    }
+    .diary-persona-tab {
+      flex: 1;
+      background: transparent;
+      color: #9aa3bd;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    .diary-persona-tab:hover {
+      color: #e6e8f0;
+    }
+    .diary-persona-tab.active {
+      background: #262c47;
+      color: #fff;
+      border-color: #6c5ce7;
+      box-shadow: 0 2px 8px rgba(108, 92, 231, 0.25);
+    }
+    .diary-status-banner {
+      display: none;
+      padding: 8px 12px;
+      border-radius: 9px;
+      font-size: 12px;
+      line-height: 1.45;
+      border: 1px solid #323b5e;
+      background: #121521;
+      color: #cfd5e6;
+      word-break: break-word;
+    }
+    .diary-status-banner.info {
+      display: block;
+      background: rgba(108, 92, 231, 0.14);
+      border-color: rgba(124, 111, 247, 0.45);
+      color: #dfe4f2;
+    }
+    .diary-status-banner.success {
+      display: block;
+      background: rgba(0, 184, 148, 0.14);
+      border-color: rgba(85, 239, 196, 0.45);
+      color: #b8f7e6;
+    }
+    .diary-status-banner.error {
+      display: block;
+      background: rgba(214, 48, 49, 0.14);
+      border-color: rgba(255, 118, 117, 0.45);
+      color: #ffb8b8;
+    }
+    .diary-tab-panel, .persona-tab-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .diary-timeline {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: 52dvh;
+      overflow-y: auto;
+      padding: 4px 4px 4px 18px;
+    }
+    .diary-timeline::before {
+      content: "";
+      position: absolute;
+      left: 6px;
+      top: 8px;
+      bottom: 8px;
+      width: 2px;
+      background: linear-gradient(180deg, #6c5ce7 0%, #2b324d 100%);
+      border-radius: 99px;
+    }
+    .diary-card {
+      position: relative;
+      background: #121521;
+      border: 1px solid #2b324d;
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      transition: border-color 0.2s;
+    }
+    .diary-card:hover {
+      border-color: #6c5ce7;
+    }
+    .diary-card::before {
+      content: "";
+      position: absolute;
+      left: -16px;
+      top: 16px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #a29bfe;
+      border: 2px solid #171a26;
+      box-shadow: 0 0 6px rgba(162, 155, 254, 0.8);
+    }
+    .diary-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .diary-date-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: #a29bfe;
+      background: rgba(108, 92, 231, 0.16);
+      border: 1px solid rgba(124, 111, 247, 0.35);
+      border-radius: 6px;
+      padding: 2px 7px;
+      font-variant-numeric: tabular-nums;
+    }
+    .diary-mood-badge {
+      font-size: 11px;
+      color: #ffeaa7;
+      background: #1b2035;
+      border: 1px solid #323b5e;
+      border-radius: 99px;
+      padding: 2px 8px;
+    }
+    .diary-card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      line-height: 1.35;
+    }
+    .diary-card-content {
+      font-size: 13px;
+      color: #cfd5e6;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .diary-highlights {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 2px;
+    }
+    .diary-highlight-chip {
+      font-size: 11px;
+      color: #55efc4;
+      background: rgba(0, 184, 148, 0.12);
+      border: 1px solid rgba(85, 239, 196, 0.32);
+      border-radius: 6px;
+      padding: 2px 7px;
+      line-height: 1.35;
+    }
+    .diary-empty-state {
+      background: #121521;
+      border: 1px dashed #323b5e;
+      border-radius: 12px;
+      padding: 20px 14px;
+      text-align: center;
+      font-size: 13px;
+      color: #9aa3bd;
+      line-height: 1.5;
+    }
+    .persona-actions-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      background: #121521;
+      border: 1px solid #282f47;
+      border-radius: 10px;
+      padding: 8px 10px;
+    }
+    .persona-section {
+      background: #121521;
+      border: 1px solid #282f47;
+      border-radius: 11px;
+      padding: 11px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .persona-section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .persona-section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #a29bfe;
+    }
+    .persona-meta-note {
+      font-size: 11px;
+      color: #8c96b2;
+    }
+    .persona-traits-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .persona-trait-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .persona-trait-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: #dfe4f2;
+    }
+    .persona-trait-label strong {
+      font-variant-numeric: tabular-nums;
+      color: #fff;
+    }
+    .persona-trait-track {
+      height: 8px;
+      background: #0b0d14;
+      border-radius: 99px;
+      overflow: hidden;
+      border: 1px solid #252b42;
+    }
+    .persona-trait-fill {
+      height: 100%;
+      border-radius: 99px;
+      transition: width 0.35s ease;
+    }
+    .persona-trait-fill.warmth {
+      background: linear-gradient(90deg, #fd79a8, #ff7675);
+    }
+    .persona-trait-fill.playfulness {
+      background: linear-gradient(90deg, #a29bfe, #6c5ce7);
+    }
+    .persona-trait-fill.teasing {
+      background: linear-gradient(90deg, #fdcb6e, #e17055);
+    }
+    .persona-trait-fill.chattiness {
+      background: linear-gradient(90deg, #00cec9, #55efc4);
+    }
+    .persona-tags-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .persona-tag {
+      font-size: 11px;
+      color: #ffeaa7;
+      background: rgba(108, 92, 231, 0.2);
+      border: 1px solid rgba(124, 111, 247, 0.45);
+      border-radius: 99px;
+      padding: 3px 9px;
+    }
+    .persona-tag.habit {
+      color: #81ecec;
+      background: rgba(0, 206, 201, 0.14);
+      border-color: rgba(0, 206, 201, 0.4);
+    }
+    .persona-text-box {
+      font-size: 12.5px;
+      color: #cfd5e6;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0f111a;
+      border: 1px solid #23283c;
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .persona-empty-inline {
+      font-size: 12px;
+      color: #8c96b2;
+    }
 `;
