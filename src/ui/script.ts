@@ -13,12 +13,20 @@ export const UI_SCRIPT: string = `
     var sendBtn = document.getElementById('sendBtn');
     var petEmojiEl = document.getElementById('petEmoji');
     var petStatsEl = document.getElementById('petStats');
+    var petAffectionValEl = document.getElementById('petAffectionVal');
+    var petAffectionFillEl = document.getElementById('petAffectionFill');
+    var petEnergyValEl = document.getElementById('petEnergyVal');
+    var petEnergyFillEl = document.getElementById('petEnergyFill');
     var petActivityBadgeEl = document.getElementById('petActivityBadge');
     var petActivityTextEl = document.getElementById('petActivityText');
     var petBoredomChipEl = document.getElementById('petBoredomChip');
     var petBoredomTextEl = document.getElementById('petBoredomText');
     var petBoredomFillEl = document.getElementById('petBoredomFill');
     var petStatusNoteEl = document.getElementById('petStatusNote');
+    var quickPatBtnEl = document.getElementById('quickPatBtn');
+    var quickFeedBtnEl = document.getElementById('quickFeedBtn');
+    var quickSleepBtnEl = document.getElementById('quickSleepBtn');
+    var quickRefreshBtnEl = document.getElementById('quickRefreshBtn');
     var petStageEl = document.getElementById('petStage');
     var modalEl = document.getElementById('settingsModal');
     var tokenInput = document.getElementById('tokenInput');
@@ -61,11 +69,67 @@ export const UI_SCRIPT: string = `
     }
 
     // ==================== [UI_RENDER] ====================
+    var VALID_MOODS = ['idle', 'happy', 'thinking', 'sleepy', 'caring'];
+
+    function normalizeMood(mood) {
+      var m = String(mood || '').toLowerCase();
+      return VALID_MOODS.indexOf(m) >= 0 ? m : 'idle';
+    }
+
+    function setPetMood(mood) {
+      var m = normalizeMood(mood);
+      if (!petEmojiEl) return;
+      petEmojiEl.textContent = EMOJI_MAP[m] || '🐱';
+      VALID_MOODS.forEach(function (k) {
+        petEmojiEl.classList.remove('mood-' + k);
+      });
+      petEmojiEl.classList.add('mood-' + m);
+    }
+
     function triggerAvatarBounce() {
+      if (!petEmojiEl) return;
       petEmojiEl.classList.add('bounce');
       setTimeout(function () {
         petEmojiEl.classList.remove('bounce');
-      }, 320);
+      }, 520);
+    }
+
+    function triggerQuickAvatarReaction(tempEmoji) {
+      if (!petEmojiEl) return;
+      if (tempEmoji) {
+        petEmojiEl.textContent = tempEmoji;
+      }
+      petEmojiEl.classList.remove('quick-react');
+      void petEmojiEl.offsetWidth;
+      petEmojiEl.classList.add('quick-react');
+      setTimeout(function () {
+        petEmojiEl.classList.remove('quick-react');
+      }, 560);
+    }
+
+    function getHongKongHour() {
+      try {
+        var hourStr = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'Asia/Hong_Kong',
+          hour: '2-digit',
+          hour12: false
+        }).format(new Date());
+        var parsed = parseInt(hourStr, 10);
+        if (!isNaN(parsed)) return parsed % 24;
+      } catch (e) {}
+      return (new Date().getUTCHours() + 8) % 24;
+    }
+
+    function applyTimeBasedTheme() {
+      var hkHour = getHongKongHour();
+      document.body.classList.remove('theme-day', 'theme-dusk', 'theme-night');
+      if (hkHour >= 7 && hkHour < 18) {
+        document.body.classList.add('theme-day');
+      } else if (hkHour >= 18 && hkHour < 23) {
+        document.body.classList.add('theme-dusk');
+      } else {
+        document.body.classList.add('theme-night');
+      }
     }
 
     function formatTime(ts) {
@@ -186,6 +250,7 @@ export const UI_SCRIPT: string = `
       renderMessage('user', text, '', userTime);
 
       var loadingEl = renderMessage('bot', '思考中...', '', null);
+      setPetMood('thinking');
 
       try {
         var data = await sendInteractionRequest(text, 'PWA 專屬介面');
@@ -193,7 +258,7 @@ export const UI_SCRIPT: string = `
 
         var reply = data.reply || JSON.stringify(data);
         var emotion = (data.action && data.action.emotion) ? data.action.emotion : 'idle';
-        petEmojiEl.textContent = EMOJI_MAP[emotion] || '🐱';
+        setPetMood(emotion);
         triggerAvatarBounce();
 
         if (data.pet_state) {
@@ -1540,12 +1605,13 @@ export const UI_SCRIPT: string = `
       try {
         var raw = localStorage.getItem(CARE_STORAGE_KEY);
         if (!raw) {
-          return { energy: 75, affection: 60, boredom: 0, activity: '伸懶腰中，喺桌面四圍巡邏 🐾', statusNote: '', lastFedAt: 0 };
+          return { energy: 75, affection: 60, boredom: 0, mood: 'idle', activity: '伸懶腰中，喺桌面四圍巡邏 🐾', statusNote: '', lastFedAt: 0 };
         }
         var parsed = JSON.parse(raw);
         var energyVal = clampVal(parsed.energy !== undefined ? parsed.energy : 75);
         var affectionVal = clampVal(parsed.affection !== undefined ? parsed.affection : 60);
         var boredomVal = clampVal(parsed.boredom !== undefined ? parsed.boredom : 0);
+        var moodVal = normalizeMood(parsed.mood || 'idle');
         var activityVal = (typeof parsed.activity === 'string' && parsed.activity.trim())
           ? parsed.activity.trim()
           : getFallbackActivityText(energyVal, boredomVal);
@@ -1554,12 +1620,13 @@ export const UI_SCRIPT: string = `
           energy: energyVal,
           affection: affectionVal,
           boredom: boredomVal,
+          mood: moodVal,
           activity: activityVal,
           statusNote: noteVal,
           lastFedAt: parsed.lastFedAt || 0
         };
       } catch (e) {
-        return { energy: 75, affection: 60, boredom: 0, activity: '伸懶腰中，喺桌面四圍巡邏 🐾', statusNote: '', lastFedAt: 0 };
+        return { energy: 75, affection: 60, boredom: 0, mood: 'idle', activity: '伸懶腰中，喺桌面四圍巡邏 🐾', statusNote: '', lastFedAt: 0 };
       }
     }
 
@@ -1592,7 +1659,21 @@ export const UI_SCRIPT: string = `
       careAffectionBarEl.style.width = st.affection + '%';
       careMoodTextEl.textContent = '狀態：' + getMoodLabel(st.energy, st.affection) + ' ｜ 無聊度 ' + boredomVal + '% ｜ ' + activityStr;
 
-      petStatsEl.textContent = '好感度 ' + st.affection + ' ｜ 活力 ' + st.energy + ' ｜ 無聊度 ' + boredomVal + '%';
+      if (petStatsEl) {
+        petStatsEl.textContent = '好感度 ' + st.affection + ' ｜ 活力 ' + st.energy + ' ｜ 無聊度 ' + boredomVal + '%';
+      }
+      if (petAffectionValEl) {
+        petAffectionValEl.textContent = String(st.affection);
+      }
+      if (petAffectionFillEl) {
+        petAffectionFillEl.style.width = st.affection + '%';
+      }
+      if (petEnergyValEl) {
+        petEnergyValEl.textContent = String(st.energy);
+      }
+      if (petEnergyFillEl) {
+        petEnergyFillEl.style.width = st.energy + '%';
+      }
       if (petActivityTextEl) {
         petActivityTextEl.textContent = activityStr;
       }
@@ -1605,9 +1686,11 @@ export const UI_SCRIPT: string = `
         petBoredomFillEl.className = 'boredom-fill ' + fillLevel;
       }
       if (petStatusNoteEl) {
-        petStatusNoteEl.textContent = st.statusNote ? ('💬 ' + st.statusNote) : '';
-        petStatusNoteEl.title = st.statusNote || '';
+        var displayNote = st.statusNote || getMoodLabel(st.energy, st.affection);
+        petStatusNoteEl.textContent = displayNote ? ('💬 ' + displayNote) : '';
+        petStatusNoteEl.title = displayNote || '';
       }
+      setPetMood(st.mood || 'idle');
     }
 
     window.syncPetStatsFromBackend = function (affectionVal, energyVal, extraObj, statusNoteVal, moodVal) {
@@ -1630,7 +1713,8 @@ export const UI_SCRIPT: string = `
         st.statusNote = statusNoteVal;
       }
       if (moodVal && EMOJI_MAP[moodVal]) {
-        petEmojiEl.textContent = EMOJI_MAP[moodVal];
+        st.mood = normalizeMood(moodVal);
+        setPetMood(st.mood);
       }
       saveCareLocalStore(st);
       updateCareUiDisplay();
@@ -1836,9 +1920,9 @@ export const UI_SCRIPT: string = `
       return null;
     }
 
-    async function syncPetState() {
+    async function syncPetState(withFeedback) {
       var cfg = getConfig();
-      if (!cfg.token) return;
+      if (!cfg.token) return null;
       try {
         var res = await fetch('/v1/pet/state?uid=' + encodeURIComponent(cfg.uid), {
           headers: { 'Authorization': 'Bearer ' + cfg.token }
@@ -1847,16 +1931,73 @@ export const UI_SCRIPT: string = `
         if (data && data.ok && data.pet_state) {
           var ext = data.pet_state.extra;
           if (!ext || typeof ext !== 'object' || ext.boredom === undefined || !ext.activity) {
-            await triggerLifecycleTick(true);
+            return await triggerLifecycleTick(!withFeedback);
           } else {
             applyPetState(data.pet_state);
+            if (withFeedback) {
+              triggerAvatarBounce();
+            }
+            return data.pet_state;
           }
         }
       } catch (e) {}
+      return null;
     }
 
     window.triggerLifecycleTick = triggerLifecycleTick;
     window.syncPetStateFromServer = syncPetState;
+
+    function triggerQuickInteract(promptText, reactEmoji, tempMood) {
+      if (sendBtn.disabled) return;
+      var cfg = getConfig();
+      if (!cfg.token) {
+        openSettings();
+        return;
+      }
+      if (tempMood) {
+        setPetMood(tempMood);
+      }
+      triggerQuickAvatarReaction(reactEmoji);
+      inputEl.value = promptText;
+      sendMessage();
+    }
+
+    if (quickPatBtnEl) {
+      quickPatBtnEl.onclick = function () {
+        triggerQuickInteract('👋 輕輕摸下你個頭，同你撒個嬌～', '🥰', 'caring');
+      };
+    }
+    if (quickFeedBtnEl) {
+      quickFeedBtnEl.onclick = function () {
+        triggerQuickInteract('🐟 餵你食塊香脆小魚乾零食，快啲補充活力啦！', '😸', 'happy');
+      };
+    }
+    if (quickSleepBtnEl) {
+      quickSleepBtnEl.onclick = function () {
+        triggerQuickInteract('💤 拍拍枕頭哄你瞓覺，乖乖合埋眼休息叉電啦～', '😪', 'sleepy');
+      };
+    }
+    if (quickRefreshBtnEl) {
+      quickRefreshBtnEl.onclick = async function () {
+        var cfg = getConfig();
+        if (!cfg.token) {
+          openSettings();
+          return;
+        }
+        markUserActivity();
+        quickRefreshBtnEl.disabled = true;
+        quickRefreshBtnEl.classList.add('loading');
+        quickRefreshBtnEl.textContent = '🔄 同步中...';
+        triggerQuickAvatarReaction();
+        try {
+          await syncPetState(true);
+        } finally {
+          quickRefreshBtnEl.disabled = false;
+          quickRefreshBtnEl.classList.remove('loading');
+          quickRefreshBtnEl.textContent = '🔄 刷新狀態';
+        }
+      };
+    }
 
     if (petActivityBadgeEl) {
       petActivityBadgeEl.onclick = function () {
@@ -1933,13 +2074,15 @@ export const UI_SCRIPT: string = `
     // 保留 petStageEl 供未來 3D 桌寵模型掛載使用
     window.petStageElement = petStageEl;
 
+    applyTimeBasedTheme();
     updateCareUiDisplay();
     if (getConfig().token) {
-      syncPetState();
+      syncPetState(false);
     }
     setInterval(function () {
+      applyTimeBasedTheme();
       if (getConfig().token) {
-        syncPetState();
+        syncPetState(false);
       }
     }, 60000);
 `;

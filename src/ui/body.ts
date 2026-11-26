@@ -1,21 +1,35 @@
 export const UI_BODY: string = `
   <header>
     <div class="pet-info">
-      <div class="avatar" id="petEmoji">🐱</div>
+      <div class="avatar mood-idle" id="petEmoji" title="桌寵情緒狀態">🐱</div>
       <div class="pet-meta">
         <div class="title-row">
           <div class="title" id="petTitle">Gemini 桌寵</div>
           <span class="pet-activity-badge" id="petActivityBadge" title="當前小動作（點擊可立即同步生理時鐘狀態）">🐾 <span id="petActivityText">伸懶腰中</span></span>
         </div>
-        <div class="stats" id="petStats">好感度 -- ｜ 活力 -- ｜ 無聊度 --</div>
-        <div class="pet-extra-bar" id="petExtraBar">
+        <div class="pet-bars-row" id="petBarsRow">
+          <div class="stat-pill" id="petAffectionChip" title="好感度 (0-100)">
+            <span class="stat-pill-label">💖 好感 <strong id="petAffectionVal">60</strong></span>
+            <div class="stat-pill-track">
+              <div class="stat-pill-fill affection" id="petAffectionFill" style="width: 60%;"></div>
+            </div>
+          </div>
+          <div class="stat-pill" id="petEnergyChip" title="活力值 (0-100)">
+            <span class="stat-pill-label">⚡ 活力 <strong id="petEnergyVal">75</strong></span>
+            <div class="stat-pill-track">
+              <div class="stat-pill-fill energy" id="petEnergyFill" style="width: 75%;"></div>
+            </div>
+          </div>
           <div class="boredom-meter" id="petBoredomChip" title="無聊度（0-100，每小時無互動 +8，互動後歸零；點擊可同步狀態）">
-            <span class="boredom-label">🥱 無聊度 <strong id="petBoredomText">0%</strong></span>
+            <span class="boredom-label">🥱 無聊 <strong id="petBoredomText">0%</strong></span>
             <div class="boredom-track">
               <div class="boredom-fill low" id="petBoredomFill" style="width: 0%;"></div>
             </div>
           </div>
+        </div>
+        <div class="pet-extra-bar" id="petExtraBar">
           <span class="status-note-text" id="petStatusNote"></span>
+          <span class="stats" id="petStats" style="display:none;">好感度 -- ｜ 活力 -- ｜ 無聊度 --</span>
         </div>
       </div>
     </div>
@@ -67,6 +81,13 @@ export const UI_BODY: string = `
   <div id="petStage" style="display:none;"></div>
 
   <main id="chat"></main>
+
+  <div class="quick-actions-bar" id="quickActionsBar">
+    <button class="quick-action-btn" id="quickPatBtn" type="button">👋 摸頭</button>
+    <button class="quick-action-btn" id="quickFeedBtn" type="button">🐟 餵零食</button>
+    <button class="quick-action-btn" id="quickSleepBtn" type="button">💤 哄瞓覺</button>
+    <button class="quick-action-btn refresh" id="quickRefreshBtn" type="button">🔄 刷新狀態</button>
+  </div>
 
   <footer>
     <textarea id="input" rows="1" placeholder="跟桌寵說點什麼..."></textarea>
