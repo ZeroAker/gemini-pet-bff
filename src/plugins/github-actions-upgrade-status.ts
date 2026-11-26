@@ -161,6 +161,8 @@ function extractLogSummary(rawLog: string, maxTailChars = 3200): { error_lines: 
   };
 }
 
+const REJECTION_SIGNAL_PATTERN = /(\brejected\b|安全閘門|拒絕修改|受保護|核心模組|核心功能|白名單|PROTECTED_CORE)/i;
+
 function formatApiError(status: number, res: Response, contextLabel: string): string {
   const remaining = res.headers.get('x-ratelimit-remaining');
   if (status === 403 && remaining === '0') {
@@ -173,6 +175,132 @@ function formatApiError(status: number, res: Response, contextLabel: string): st
     return `${contextLabel} 失敗：GitHub 認證失敗（HTTP 401），請檢查 github_token。`;
   }
   return `${contextLabel} 失敗（HTTP ${status}）。`;
+}
+
+function buildUpgradeVerdictSummary(
+  targetRun: GitHubWorkflowRun,
+  jobDetails: Array<Record<string, unknown>>
+): {
+  is_completed: boolean;
+  is_success: boolean;
+  is_rejected: boolean;
+  verdict: string;
+  failed_steps: string[];
+  annotations_summary: string[];
+  failure_reasons: string[];
+  status_message: string;
+} {
+  const runStatus = (targetRun.status || '').toLowerCase();
+  const runConclusion = (targetRun.conclusion || '').toLowerCase();
+  const isCompleted = runStatus === 'completed';
+  const isSuccess = isCompleted && runConclusion === 'success';
+  const actionsUrl = targetRun.html_url ?? '';
+
+  const failedSteps: string[] = [];
+  const annotationsSummary: string[] = [];
+  const failureReasons: string[] = [];
+
+  for (const job of jobDetails) {
+    const jobName = asTrimmedString(job.name) || 'Job';
+    const fSteps = Array.isArray(job.failed_steps) ? job.failed_steps : [];
+    for (const st of fSteps) {
+      if (!st || typeof st !== 'object') continue;
+      const sRec = st as Record<string, unknown>;
+      const label = `${jobName} > ${asTrimmedString(sRec.name) || '步驟'} (${asTrimmedString(sRec.conclusion) || 'failure'})`;
+      if (!failedSteps.includes(label)) failedSteps.push(label);
+    }
+
+    const anns = Array.isArray(job.annotations) ? job.annotations : [];
+    for (const ann of anns) {
+      if (!ann || typeof ann !== 'object') continue;
+      const aRec = ann as Record<string, unknown>;
+      const msg = asTrimmedString(aRec.message);
+      if (!msg) continue;
+      const level = asTrimmedString(aRec.level);
+      const title = asTrimmedString(aRec.title);
+      const filePath = asTrimmedString(aRec.path);
+      const lineNum = typeof aRec.start_line === 'number' ? `:${aRec.start_line}` : '';
+      const loc = filePath ? `${filePath}${lineNum} ` : '';
+      const head = level ? `[${level}] ` : '';
+      const titlePart = title ? `${title}: ` : '';
+      const formatted = `${head}${loc}${titlePart}${msg}`.trim();
+      if (!annotationsSummary.includes(formatted)) annotationsSummary.push(formatted);
+    }
+
+    const errLines = Array.isArray(job.error_lines) ? job.error_lines : [];
+    for (const line of errLines) {
+      const trimmed = asTrimmedString(line);
+      if (trimmed && !failureReasons.includes(trimmed)) failureReasons.push(trimmed);
+    }
+
+    if (failureReasons.length === 0) {
+      const tail = asTrimmedString(job.log_tail);
+      if (tail) {
+        const tailLines = tail.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+        for (const tl of tailLines.slice(-3)) {
+          if (!failureReasons.includes(tl)) failureReasons.push(tl);
+        }
+      } else {
+        const note = asTrimmedString(job.log_access_note);
+        if (note && !failureReasons.includes(note)) failureReasons.push(note);
+      }
+    }
+  }
+
+  const isRejected =
+    !isSuccess &&
+    (failedSteps.some((s) => REJECTION_SIGNAL_PATTERN.test(s)) ||
+      annotationsSummary.some((a) => REJECTION_SIGNAL_PATTERN.test(a)) ||
+      failureReasons.some((r) => REJECTION_SIGNAL_PATTERN.test(r)));
+
+  let verdict = runStatus || 'unknown';
+  if (isCompleted) {
+    if (isSuccess) verdict = 'success';
+    else if (isRejected) verdict = 'rejected';
+    else if (runConclusion === 'cancelled') verdict = 'cancelled';
+    else if (runConclusion === 'timed_out') verdict = 'timed_out';
+    else verdict = runConclusion || 'failure';
+  }
+
+  const lines: string[] = [];
+  if (!isCompleted) {
+    lines.push(`🔄 自我升級任務執行中（status: ${runStatus || 'in_progress'}）。`);
+  } else if (isSuccess) {
+    lines.push('🎉 自我升級成功！GitHub Actions 已完成且結果為 success（status: completed, conclusion: success）。');
+  } else {
+    if (isRejected) {
+      lines.push(`🚫 自我升級請求被安全閘門拒絕（status: ${runStatus}, conclusion: ${runConclusion || 'failure'}）。`);
+    } else if (runConclusion === 'cancelled') {
+      lines.push(`⚠️ 自我升級任務已取消（status: ${runStatus}, conclusion: cancelled）。`);
+    } else if (runConclusion === 'timed_out') {
+      lines.push(`⏱️ 自我升級任務執行逾時（status: ${runStatus}, conclusion: timed_out）。`);
+    } else {
+      lines.push(`❌ 自我升級任務執行失敗（status: ${runStatus}, conclusion: ${runConclusion || 'failure'}）。`);
+    }
+    if (failedSteps.length > 0) {
+      lines.push(`失敗步驟：${failedSteps.slice(0, 6).join('；')}`);
+    }
+    if (annotationsSummary.length > 0) {
+      lines.push(`Annotations 摘要：${annotationsSummary.slice(0, 4).join(' | ')}`);
+    }
+    if (failureReasons.length > 0) {
+      lines.push(`失敗/拒絕原因：${failureReasons.slice(0, 4).join(' | ')}`);
+    }
+  }
+  if (actionsUrl) {
+    lines.push(`Actions 連結：${actionsUrl}`);
+  }
+
+  return {
+    is_completed: isCompleted,
+    is_success: isSuccess,
+    is_rejected: isRejected,
+    verdict,
+    failed_steps: failedSteps.slice(0, 8),
+    annotations_summary: annotationsSummary.slice(0, 8),
+    failure_reasons: failureReasons.slice(0, 6),
+    status_message: lines.join('\n'),
+  };
 }
 
 export const githubActionsUpgradeStatusPlugin: PluginTool = {
@@ -308,10 +436,13 @@ export const githubActionsUpgradeStatusPlugin: PluginTool = {
       const jobsUrl = `https://api.github.com/repos/${repo}/actions/runs/${targetRun.id}/jobs?per_page=20`;
       const jobsRes = await fetchWithTimeout(jobsUrl, headers);
       if (!jobsRes.ok) {
+        const fallbackVerdict = buildUpgradeVerdictSummary(targetRun, []);
         return {
           ok: true,
           repo,
           workflow_file: workflowFile,
+          actions_url: targetRun.html_url ?? '',
+          ...fallbackVerdict,
           run: {
             id: targetRun.id,
             run_number: targetRun.run_number ?? null,
@@ -407,10 +538,13 @@ export const githubActionsUpgradeStatusPlugin: PluginTool = {
         });
       }
 
+      const verdictSummary = buildUpgradeVerdictSummary(targetRun, jobDetails);
       return {
         ok: true,
         repo,
         workflow_file: workflowFile,
+        actions_url: targetRun.html_url ?? '',
+        ...verdictSummary,
         run: {
           id: targetRun.id,
           run_number: targetRun.run_number ?? null,

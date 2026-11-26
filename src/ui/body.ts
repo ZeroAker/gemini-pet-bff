@@ -32,6 +32,7 @@ export const UI_BODY: string = `
       <strong id="upgradeTitle">🪵 Log Cabin · 升級日誌面板</strong>
       <button class="btn-icon" id="closeUpgradeBar" style="padding:2px 8px;font-size:11px;">隱藏</button>
     </div>
+    <div id="upgradeVerdictDetail" class="upgrade-verdict-detail" style="display:none;"></div>
     <pre id="upgradeLogs" style="white-space:pre-wrap;font-family:monospace;color:#9aa3bd;max-height:120px;overflow-y:auto;line-height:1.4;"></pre>
     <div id="upgradeLink" style="margin-top:6px;"></div>
     <div id="cabinProgressSlot" class="cabin-progress-slot"></div>
