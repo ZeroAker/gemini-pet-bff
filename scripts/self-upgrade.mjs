@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import https from 'node:https';
 import path from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
@@ -12,25 +13,22 @@ const PROTECTED_CORE_TOOLS = [
   'check_upgrade_status',
 ];
 
-const MODEL_TIMEOUT_MS = 10 * 60 * 1000; // 單次模型請求最多 10 分鐘
-const HEARTBEAT_INTERVAL_MS = 20 * 1000; // 每 20 秒回寫心跳進度
-const MAX_HEAL_ATTEMPTS = 3; // 驗證或編譯失敗時，最多自動修復 3 輪
-const MAX_TIMEOUT_RETRIES = 1; // 同一模型逾時後最多原地重試 1 次（合共 2 次機會）
-const TIMEOUT_RETRY_DELAY_MS = 5 * 1000; // 逾時重試前冷卻 5 秒
+const READ_ONLY_CORE_FILES = [
+  'src/types.ts',
+  'src/index.ts',
+  'src/tools.ts',
+  'src/services.ts',
+  'package.json',
+  'tsconfig.json',
+  'wrangler.toml',
+];
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function isTimeoutError(err) {
-  const name = err?.name || '';
-  const msg = err instanceof Error ? err.message : String(err);
-  const causeCode = err?.cause?.code || err?.code || '';
-  return (
-    name === 'TimeoutError' ||
-    name === 'AbortError' ||
-    ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ETIMEDOUT'].includes(causeCode) ||
-    /timeout|timed out|aborted/i.test(msg)
-  );
-}
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 超過 5 分鐘完全無新 chunk 先判逾時
+const HARD_TIMEOUT_MS = 20 * 60 * 1000; // 單一思考步驟總上限 20 分鐘
+const HEARTBEAT_INTERVAL_MS = 20 * 1000; // 每 20 秒回寫一次心跳給 PWA
+const MAX_AGENT_TURNS = 20; // 最多執行 20 輪自主讀寫與修復步驟
+const MAX_TIMEOUT_RETRIES = 1; // 同一模型逾時後先原地重試 1 次
+const TIMEOUT_RETRY_DELAY_MS = 5 * 1000;
 
 const userId = (process.env.INPUT_USER_ID || 'zero_main').trim();
 const instruction = (process.env.INPUT_INSTRUCTION || '').trim();
@@ -56,6 +54,20 @@ const candidateModels = Array.from(
     ].filter(Boolean)
   )
 );
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isTimeoutError(err) {
+  const name = err?.name || '';
+  const msg = err instanceof Error ? err.message : String(err);
+  const causeCode = err?.cause?.code || err?.code || '';
+  return (
+    name === 'TimeoutError' ||
+    name === 'AbortError' ||
+    ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ETIMEDOUT', 'ECONNRESET'].includes(causeCode) ||
+    /timeout|timed out|aborted|premature close/i.test(msg)
+  );
+}
 
 function formatTime() {
   return new Intl.DateTimeFormat('zh-HK', {
@@ -105,7 +117,7 @@ async function initRecordFromRedis() {
       if (prev.started_at) record.started_at = prev.started_at;
     }
   } catch {
-    // 忽略讀取異常，使用新紀錄
+    // 忽略讀取異常
   }
 }
 
@@ -121,7 +133,7 @@ async function logStep(step, message) {
 async function updateHeartbeat(message) {
   const line = `[${formatTime()}] 💓 ${message}`;
   console.log(`(heartbeat) ${line}`);
-  record.step = 'generating_code';
+  record.step = 'agent_thinking';
   if (record.logs.length > 0 && record.logs[record.logs.length - 1].includes('💓')) {
     record.logs[record.logs.length - 1] = line;
   } else {
@@ -131,174 +143,67 @@ async function updateHeartbeat(message) {
   await redisCmd(['SET', `upgrade:${userId}`, JSON.stringify(record)]);
 }
 
-// 讀取所有允許修改的檔案：src/plugins/*.ts、src/ui.ts、src/ui/*.ts
-function readEditableFiles() {
-  const files = {};
+// ============================================================================
+// 路徑白名單與安全驗證層
+// ============================================================================
+function normalizeRelPath(inputPath) {
+  if (typeof inputPath !== 'string') return '';
+  return inputPath.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+}
+
+function isEditablePath(relPath) {
+  if (relPath === 'src/ui.ts') return true;
+  if (/^src\/ui\/[a-z][a-z0-9-]*\.ts$/.test(relPath)) return true;
+  if (/^src\/plugins\/[a-z][a-z0-9-]*\.ts$/.test(relPath)) return true;
+  return false;
+}
+
+function isReadablePath(relPath) {
+  return isEditablePath(relPath) || READ_ONLY_CORE_FILES.includes(relPath);
+}
+
+function isUiPath(relPath) {
+  return relPath === 'src/ui.ts' || relPath.startsWith('src/ui/');
+}
+
+function listProjectFiles() {
+  const editable = [];
 
   const pluginsDir = path.resolve('src/plugins');
   fs.mkdirSync(pluginsDir, { recursive: true });
   for (const name of fs.readdirSync(pluginsDir).sort()) {
-    if (name.endsWith('.ts')) {
-      files[`src/plugins/${name}`] = fs.readFileSync(path.join(pluginsDir, name), 'utf8');
-    }
-  }
-  if (!files['src/plugins/registry.ts']) {
-    files['src/plugins/registry.ts'] =
-      "import type { PluginTool } from '../types';\n\nexport const CUSTOM_PLUGINS: PluginTool[] = [];\n";
+    if (name.endsWith('.ts')) editable.push(`src/plugins/${name}`);
   }
 
-  const uiEntry = path.resolve('src/ui.ts');
-  if (fs.existsSync(uiEntry)) {
-    files['src/ui.ts'] = fs.readFileSync(uiEntry, 'utf8');
+  if (fs.existsSync(path.resolve('src/ui.ts'))) {
+    editable.push('src/ui.ts');
   }
 
   const uiDir = path.resolve('src/ui');
   if (fs.existsSync(uiDir) && fs.statSync(uiDir).isDirectory()) {
     for (const name of fs.readdirSync(uiDir).sort()) {
-      if (name.endsWith('.ts')) {
-        files[`src/ui/${name}`] = fs.readFileSync(path.join(uiDir, name), 'utf8');
-      }
+      if (name.endsWith('.ts')) editable.push(`src/ui/${name}`);
     }
   }
 
-  return files;
+  const readOnly = READ_ONLY_CORE_FILES.filter((p) => fs.existsSync(path.resolve(p)));
+  return { editable_files: editable, read_only_reference_files: readOnly };
 }
 
-// 讀取唯讀核心檔案，讓模型對齊型別、API 路由與工具介面（受白名單保護，嚴禁修改）
-function readReadOnlyFiles() {
-  const targets = ['src/types.ts', 'src/index.ts', 'src/tools.ts'];
-  const files = {};
-  for (const relPath of targets) {
-    const absPath = path.resolve(relPath);
-    if (fs.existsSync(absPath)) {
-      files[relPath] = fs.readFileSync(absPath, 'utf8');
-    }
+function validateFileSecurity(relPath, content) {
+  if (/\b(eval|new Function)\b/.test(content)) {
+    throw new Error(`安全攔截：${relPath} 包含不允許的動態執行語法 (eval / new Function)`);
   }
-  return files;
-}
-
-// 重置本地工作區（用於自我修復重試前清理上一輪失敗改動）
-function resetWorkspace() {
-  execFileSync('git', ['reset', '--hard', 'HEAD'], { stdio: 'pipe' });
-  execFileSync('git', ['clean', '-fd', '--', 'src/plugins', 'src/ui'], { stdio: 'pipe' });
-}
-
-function isAllowedPath(filePath) {
-  if (filePath === 'src/ui.ts') return true;
-  if (/^src\/ui\/[a-z][a-z0-9-]*\.ts$/.test(filePath)) return true;
-  if (/^src\/plugins\/[a-z][a-z0-9-]*\.ts$/.test(filePath)) return true;
-  return false;
-}
-
-function isUiPath(filePath) {
-  return filePath === 'src/ui.ts' || filePath.startsWith('src/ui/');
-}
-
-// 第一道驗證：檢查操作路徑與欄位格式
-function validateOperationRules(ops) {
-  if (!Array.isArray(ops) || ops.length === 0) {
-    throw new Error('升級計畫未包含任何有效檔案變更（operations 不可為空）');
-  }
-
-  for (const op of ops) {
-    if (!op || typeof op.path !== 'string' || !isAllowedPath(op.path)) {
-      throw new Error(`安全攔截：禁止修改核心或未授權路徑 (${op?.path || 'unknown'})`);
-    }
-
-    if ((op.path === 'src/plugins/registry.ts' || op.path === 'src/ui.ts') && op.action === 'delete') {
-      throw new Error(`安全攔截：禁止刪除核心必要檔案 (${op.path})`);
-    }
-
-    if (op.action === 'upsert') {
-      if (typeof op.content !== 'string' || op.content.trim().length < 10) {
-        throw new Error(`檔案內容無效（upsert 缺少 content）：${op.path}`);
-      }
-    } else if (op.action === 'patch') {
-      if (!Array.isArray(op.patches) || op.patches.length === 0) {
-        throw new Error(`Patch 格式無效（缺少 patches 陣列）：${op.path}`);
-      }
-    } else if (op.action !== 'delete') {
-      throw new Error(`不支援的 action 類型：${String(op.action)}（僅限 upsert / patch / delete）`);
-    }
-  }
-}
-
-// 寫入磁碟（支援 upsert、精準單點 patch、delete）並回傳被寫入的檔案清單
-function applyOperationsToDisk(ops) {
-  const touchedPaths = new Set();
-
-  for (const op of ops) {
-    const absPath = path.resolve(op.path);
-
-    if (op.action === 'delete') {
-      if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
-      continue;
-    }
-
-    if (op.action === 'upsert') {
-      fs.mkdirSync(path.dirname(absPath), { recursive: true });
-      fs.writeFileSync(absPath, op.content, 'utf8');
-      touchedPaths.add(op.path);
-      continue;
-    }
-
-    if (op.action === 'patch') {
-      if (!fs.existsSync(absPath)) {
-        throw new Error(`Patch 失敗：目標檔案 ${op.path} 不存在，新增檔案請改用 action: "upsert"`);
-      }
-
-      let content = fs.readFileSync(absPath, 'utf8');
-      for (let i = 0; i < op.patches.length; i += 1) {
-        const patch = op.patches[i];
-        if (!patch || typeof patch.search !== 'string' || patch.search.length === 0 || typeof patch.replace !== 'string') {
-          throw new Error(`Patch 格式錯誤 (${op.path} 第 ${i + 1} 段)：search 必須為非空字串，replace 必須為字串`);
-        }
-
-        const firstIdx = content.indexOf(patch.search);
-        if (firstIdx === -1) {
-          throw new Error(
-            `Patch 失敗 (${op.path} 第 ${i + 1} 段)：找不到指定的 search 原文片段，請精準對齊縮排與換行，或改用 action: "upsert"`
-          );
-        }
-
-        const secondIdx = content.indexOf(patch.search, firstIdx + 1);
-        if (secondIdx !== -1) {
-          throw new Error(
-            `Patch 失敗 (${op.path} 第 ${i + 1} 段)：search 原文片段命中超過一次，請多包含前後 2~3 行上下文以確保唯一匹配`
-          );
-        }
-
-        content = content.slice(0, firstIdx) + patch.replace + content.slice(firstIdx + patch.search.length);
-      }
-
-      fs.writeFileSync(absPath, content, 'utf8');
-      touchedPaths.add(op.path);
-    }
-  }
-
-  return Array.from(touchedPaths);
-}
-
-// 第二道驗證：對寫入／Patch 後的最終檔案執行安全掃描
-function validateTouchedContents(touchedPaths) {
   const coreNameRegex = new RegExp(`name\\s*:\\s*['"](${PROTECTED_CORE_TOOLS.join('|')})['"]`);
-
-  for (const relPath of touchedPaths) {
-    const content = fs.readFileSync(path.resolve(relPath), 'utf8');
-    if (/\b(eval|new Function)\b/.test(content)) {
-      throw new Error(`安全攔截：${relPath} 包含不允許的動態執行語法 (eval / new Function)`);
-    }
-    if (
-      relPath.startsWith('src/plugins/') &&
-      relPath !== 'src/plugins/registry.ts' &&
-      coreNameRegex.test(content)
-    ) {
-      throw new Error(`安全攔截：插件 ${relPath} 不可使用核心保留工具名稱`);
-    }
+  if (
+    relPath.startsWith('src/plugins/') &&
+    relPath !== 'src/plugins/registry.ts' &&
+    coreNameRegex.test(content)
+  ) {
+    throw new Error(`安全攔截：插件 ${relPath} 不可使用核心保留工具名稱`);
   }
 }
 
-// 第三道驗證：跨檔動態組裝 src/ui.ts + src/ui/*.ts，檢查核心連線契約與內嵌 <script> 語法
 function validateWorkspaceUi() {
   const uiEntry = path.resolve('src/ui.ts');
   const uiDir = path.resolve('src/ui');
@@ -317,17 +222,21 @@ function validateWorkspaceUi() {
     const candidates = [base, `${base}.ts`, path.join(base, 'index.ts')];
     const found = candidates.find((p) => fs.existsSync(p) && fs.statSync(p).isFile());
     if (!found) {
-      throw new Error(`UI 模組找不到 import 目標：${specifier}（來自 ${path.relative(process.cwd(), fromFile)}）`);
+      throw new Error(
+        `UI 模組找不到 import 目標：${specifier}（來自 ${path.relative(process.cwd(), fromFile)}）`
+      );
     }
     const allowed = found === uiEntry || found.startsWith(uiDir + path.sep);
     if (!allowed) {
-      throw new Error(`安全攔截：UI 模組僅允許引入 src/ui/*，禁止存取 ${path.relative(process.cwd(), found)}`);
+      throw new Error(
+        `安全攔截：UI 模組僅允許引入 src/ui/*，禁止存取 ${path.relative(process.cwd(), found)}`
+      );
     }
     return found;
   }
 
   function loadTsModule(absFile) {
-    if (moduleCache.has(absFile)) return moduleCache.get(absFile);
+    if (moduleCache.has(absFile)) return moduleCache.get(absFile).exports;
 
     const source = fs.readFileSync(absFile, 'utf8');
     const transpiled = ts.transpileModule(source, {
@@ -349,7 +258,7 @@ function validateWorkspaceUi() {
     }
 
     const mod = { exports: {} };
-    moduleCache.set(absFile, mod.exports);
+    moduleCache.set(absFile, mod);
     const sandbox = {
       exports: mod.exports,
       module: mod,
@@ -363,7 +272,6 @@ function validateWorkspaceUi() {
       throw new Error(`UI 模組載入失敗 (${rel})：${err instanceof Error ? err.message : String(err)}`);
     }
 
-    moduleCache.set(absFile, mod.exports);
     return mod.exports;
   }
 
@@ -377,7 +285,9 @@ function validateWorkspaceUi() {
   const requiredTokens = ['/v1/pet/interact', '/v1/pet/upgrade/status', 'pet_bff_token'];
   for (const token of requiredTokens) {
     if (!html.includes(token)) {
-      throw new Error(`安全攔截：組裝後的 CHAT_HTML 缺少必要核心連線標記 (${token})，已中止以避免頁面失效`);
+      throw new Error(
+        `安全攔截：組裝後的 CHAT_HTML 缺少必要核心連線標記 (${token})，已中止以避免頁面失效`
+      );
     }
   }
 
@@ -409,16 +319,331 @@ function validateWorkspaceUi() {
   }
 }
 
-// 第四道驗證：全專案 TypeScript strict mode 檢查
-function runTypeCheck() {
+function getGitChangedFiles() {
+  const out = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
+  return out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const status = line.slice(0, 2).trim();
+      const file = line.slice(2).trim().replace(/^"|"$/g, '');
+      return `${status}:${file}`;
+    });
+}
+
+function runAllChecks(uiTouched) {
+  // 1. 掃描所有可編輯檔案安全性
+  const { editable_files } = listProjectFiles();
+  if (!editable_files.includes('src/plugins/registry.ts')) {
+    throw new Error('安全攔截：缺少必要檔案 src/plugins/registry.ts');
+  }
+  for (const relPath of editable_files) {
+    const content = fs.readFileSync(path.resolve(relPath), 'utf8');
+    validateFileSecurity(relPath, content);
+  }
+
+  // 2. 若改動過 UI，執行跨檔組裝、契約與內嵌 JS 驗證
+  if (uiTouched) {
+    validateWorkspaceUi();
+  }
+
+  // 3. 執行全專案 TypeScript strict mode 檢查
   try {
     execFileSync('npx', ['tsc', '--noEmit'], { encoding: 'utf8', stdio: 'pipe' });
   } catch (err) {
-    const output = `${err.stdout || ''}\n${err.stderr || ''}`.trim().slice(0, 2000);
+    const output = `${err.stdout || ''}\n${err.stderr || ''}`.trim().slice(0, 2500);
     throw new Error(`TypeScript (tsc --noEmit) 編譯失敗：\n${output}`);
+  }
+
+  const changedFiles = getGitChangedFiles();
+  return { changedFiles };
+}
+
+function resetWorkspace() {
+  execFileSync('git', ['reset', '--hard', 'HEAD'], { stdio: 'pipe' });
+  execFileSync('git', ['clean', '-fd', '--', 'src/plugins', 'src/ui'], { stdio: 'pipe' });
+}
+
+// ============================================================================
+// Vertex AI Agent 工具定義與執行器
+// ============================================================================
+const AGENT_TOOL_DECLARATIONS = [
+  {
+    name: 'list_files',
+    description: '列出所有可編輯檔案（src/plugins/*、src/ui.ts、src/ui/*）與唯讀核心參考檔案清單。',
+    parameters: { type: 'OBJECT', properties: {} },
+  },
+  {
+    name: 'read_file',
+    description: '讀取檔案內容（會附帶行號）。可選填 start_line 與 end_line 局部閱讀大型檔案。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: '專案相對路徑，例如 src/ui.ts 或 src/types.ts' },
+        start_line: { type: 'INTEGER', description: '起始行號（1 起算，選填）' },
+        end_line: { type: 'INTEGER', description: '結束行號（含，選填）' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: '新增或整檔覆寫白名單內的可編輯檔案（src/plugins/*.ts、src/ui.ts、src/ui/*.ts）。適合新增檔案或大型重構。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: '目標檔案路徑（必須在白名單內）' },
+        content: { type: 'STRING', description: '完整的檔案程式碼內容' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'patch_file',
+    description: '對既有白名單檔案執行精準單點替換。對小範圍修改優先使用此工具，每個 search 必須在目標檔案中剛好出現一次。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: '目標檔案路徑' },
+        patches: {
+          type: 'ARRAY',
+          description: '依序套用的替換清單',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              search: { type: 'STRING', description: '原文片段（包含前後 2~3 行上下文確保唯一匹配）' },
+              replace: { type: 'STRING', description: '替換後的新片段' },
+            },
+            required: ['search', 'replace'],
+          },
+        },
+      },
+      required: ['path', 'patches'],
+    },
+  },
+  {
+    name: 'delete_file',
+    description: '刪除不再需要的自訂插件或 UI 子模組（禁止刪除 src/ui.ts 與 src/plugins/registry.ts）。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: '要刪除的檔案路徑' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'run_checks',
+    description: '立即執行安全掃描、UI 跨檔沙盒與 <script> 語法驗證、以及 npx tsc --noEmit 全專案型別檢查。如有錯誤會回傳具體行號供你修正。',
+    parameters: { type: 'OBJECT', properties: {} },
+  },
+  {
+    name: 'finish_upgrade',
+    description: '完成所有修改並確認驗證通過後呼叫。系統會自動執行最終檢查、建立分支、開 PR 並合併部署。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        summary: { type: 'STRING', description: '繁體中文簡述本次升級內容（用於 Commit 與 PR 標題，30 字以內）' },
+      },
+      required: ['summary'],
+    },
+  },
+  {
+    name: 'reject_upgrade',
+    description: '當主人的需求會刪除或損害核心功能、或超出允許範圍時呼叫此工具安全拒絕。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        reason: { type: 'STRING', description: '繁體中文說明拒絕原因' },
+      },
+      required: ['reason'],
+    },
+  },
+];
+
+async function executeTool(name, args, session) {
+  try {
+    if (name === 'list_files') {
+      await logStep('tool_list', '檢視專案檔案結構...');
+      return { ok: true, ...listProjectFiles() };
+    }
+
+    if (name === 'read_file') {
+      const relPath = normalizeRelPath(args.path);
+      if (!isReadablePath(relPath)) {
+        return { ok: false, error: `拒絕讀取未授權路徑：${relPath}` };
+      }
+      const absPath = path.resolve(relPath);
+      if (!fs.existsSync(absPath)) {
+        return { ok: false, error: `檔案不存在：${relPath}` };
+      }
+      const raw = fs.readFileSync(absPath, 'utf8');
+      const lines = raw.split('\n');
+      const totalLines = lines.length;
+      const start = Math.max(1, Number(args.start_line) || 1);
+      const end = Math.min(totalLines, Number(args.end_line) || totalLines);
+      const sliced = lines
+        .slice(start - 1, end)
+        .map((text, idx) => `${start + idx}: ${text}`)
+        .join('\n');
+
+      await logStep('tool_read', `讀取 ${relPath}（第 ${start}-${end} 行 / 共 ${totalLines} 行）`);
+      return {
+        ok: true,
+        path: relPath,
+        editable: isEditablePath(relPath),
+        total_lines: totalLines,
+        range: `${start}-${end}`,
+        content: sliced,
+      };
+    }
+
+    if (name === 'write_file') {
+      const relPath = normalizeRelPath(args.path);
+      if (!isEditablePath(relPath)) {
+        return { ok: false, error: `安全攔截：禁止寫入核心或未授權路徑 (${relPath})` };
+      }
+      const content = typeof args.content === 'string' ? args.content : '';
+      if (content.trim().length < 5) {
+        return { ok: false, error: `寫入內容無效：${relPath}` };
+      }
+      validateFileSecurity(relPath, content);
+
+      const absPath = path.resolve(relPath);
+      fs.mkdirSync(path.dirname(absPath), { recursive: true });
+      fs.writeFileSync(absPath, content, 'utf8');
+
+      session.dirty = true;
+      session.checksPassed = false;
+      if (isUiPath(relPath)) session.uiTouched = true;
+      session.touchedFiles.add(`upsert:${relPath}`);
+
+      await logStep('tool_write', `寫入檔案 ${relPath}（${content.split('\n').length} 行）`);
+      return { ok: true, path: relPath, lines: content.split('\n').length };
+    }
+
+    if (name === 'patch_file') {
+      const relPath = normalizeRelPath(args.path);
+      if (!isEditablePath(relPath)) {
+        return { ok: false, error: `安全攔截：禁止修改核心或未授權路徑 (${relPath})` };
+      }
+      const absPath = path.resolve(relPath);
+      if (!fs.existsSync(absPath)) {
+        return { ok: false, error: `目標檔案不存在 (${relPath})，新增檔案請用 write_file` };
+      }
+      const patches = Array.isArray(args.patches) ? args.patches : [];
+      if (patches.length === 0) {
+        return { ok: false, error: 'patches 不可為空陣列' };
+      }
+
+      let content = fs.readFileSync(absPath, 'utf8');
+      for (let i = 0; i < patches.length; i += 1) {
+        const p = patches[i];
+        if (!p || typeof p.search !== 'string' || !p.search.length || typeof p.replace !== 'string') {
+          return { ok: false, error: `第 ${i + 1} 段 patch 格式錯誤` };
+        }
+        const firstIdx = content.indexOf(p.search);
+        if (firstIdx === -1) {
+          return {
+            ok: false,
+            error: `第 ${i + 1} 段 patch 在 ${relPath} 中找不到 search 原文，請先 read_file 確認精準縮排或改用 write_file`,
+          };
+        }
+        const secondIdx = content.indexOf(p.search, firstIdx + 1);
+        if (secondIdx !== -1) {
+          return {
+            ok: false,
+            error: `第 ${i + 1} 段 patch 在 ${relPath} 中命中超過一次，請多加前後 2~3 行上下文`,
+          };
+        }
+        content = content.slice(0, firstIdx) + p.replace + content.slice(firstIdx + p.search.length);
+      }
+
+      validateFileSecurity(relPath, content);
+      fs.writeFileSync(absPath, content, 'utf8');
+
+      session.dirty = true;
+      session.checksPassed = false;
+      if (isUiPath(relPath)) session.uiTouched = true;
+      session.touchedFiles.add(`patch:${relPath}`);
+
+      await logStep('tool_patch', `局部更新 ${relPath}（套用 ${patches.length} 處 patch）`);
+      return { ok: true, path: relPath, patches_applied: patches.length };
+    }
+
+    if (name === 'delete_file') {
+      const relPath = normalizeRelPath(args.path);
+      if (!isEditablePath(relPath)) {
+        return { ok: false, error: `安全攔截：禁止刪除核心或未授權路徑 (${relPath})` };
+      }
+      if (relPath === 'src/ui.ts' || relPath === 'src/plugins/registry.ts') {
+        return { ok: false, error: `安全攔截：禁止刪除必要檔案 (${relPath})` };
+      }
+      const absPath = path.resolve(relPath);
+      if (!fs.existsSync(absPath)) {
+        return { ok: false, error: `檔案原本就不存在：${relPath}` };
+      }
+      fs.unlinkSync(absPath);
+
+      session.dirty = true;
+      session.checksPassed = false;
+      if (isUiPath(relPath)) session.uiTouched = true;
+      session.touchedFiles.add(`delete:${relPath}`);
+
+      await logStep('tool_delete', `刪除檔案 ${relPath}`);
+      return { ok: true, deleted: relPath };
+    }
+
+    if (name === 'run_checks') {
+      await logStep('type_checking', '執行安全掃描、UI 沙盒與 npx tsc --noEmit 檢查...');
+      const { changedFiles } = runAllChecks(session.uiTouched);
+      session.checksPassed = true;
+      await logStep('type_check_passed', `所有檢查全數通過！（變更 ${changedFiles.length} 個檔案）`);
+      return { ok: true, passed: true, changed_files: changedFiles };
+    }
+
+    if (name === 'finish_upgrade') {
+      const summary = String(args.summary || '').trim();
+      if (!summary) {
+        return { ok: false, error: '請提供 summary 簡述本次升級內容' };
+      }
+      // 無論 Agent 剛才有無手動跑過 run_checks，結束前都強制確保最新磁碟狀態通過檢查
+      if (!session.checksPassed) {
+        await logStep('type_checking', '結束前自動執行最終安全與型別檢查...');
+        const { changedFiles } = runAllChecks(session.uiTouched);
+        if (changedFiles.length === 0) {
+          return { ok: false, error: '目前工作區沒有任何實際檔案變更，無法結束升級' };
+        }
+        session.checksPassed = true;
+      } else {
+        const changedFiles = getGitChangedFiles();
+        if (changedFiles.length === 0) {
+          return { ok: false, error: '目前工作區沒有任何實際檔案變更，無法結束升級' };
+        }
+      }
+
+      session.outcome = { type: 'finish', summary };
+      return { ok: true, status: 'accepted_for_pr', summary };
+    }
+
+    if (name === 'reject_upgrade') {
+      const reason = String(args.reason || '此操作可能影響核心功能，已拒絕執行').trim();
+      session.outcome = { type: 'reject', reason };
+      return { ok: true, status: 'rejected', reason };
+    }
+
+    return { ok: false, error: `未知工具：${name}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await logStep('tool_error', `${name} 回報錯誤，交由 Agent 修正：${msg.split('\n')[0].slice(0, 100)}`);
+    return { ok: false, error: msg };
   }
 }
 
+// ============================================================================
+// Vertex AI node:https SSE 串流引擎（Idle Watchdog + 完整保留 thoughtSignature）
+// ============================================================================
 function buildStreamEndpoint(model) {
   const host =
     location === 'global'
@@ -427,175 +652,230 @@ function buildStreamEndpoint(model) {
   return `${host}/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
 }
 
-async function readSseStream(res, progress) {
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder('utf-8');
-  let buffer = '';
-  let textOutput = '';
+function streamVertexWithWatchdog(urlStr, payload, progress) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(urlStr);
+    const bodyStr = JSON.stringify(payload);
+    let settled = false;
+    let idleTimer = null;
+    let hardTimer = null;
 
-  const consumeLine = (rawLine) => {
-    const line = rawLine.trim();
-    if (!line.startsWith('data:')) return;
-    const jsonStr = line.slice(5).trim();
-    if (!jsonStr || jsonStr === '[DONE]') return;
+    const cleanup = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+    };
 
-    try {
-      const chunk = JSON.parse(jsonStr);
-      const parts = chunk.candidates?.[0]?.content?.parts ?? [];
-      for (const p of parts) {
-        if (p.thought && p.text) {
-          progress.thoughtChars += p.text.length;
-        } else if (!p.thought && p.text) {
-          textOutput += p.text;
-          progress.outputChars += p.text.length;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+
+    const succeed = (result) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const req = https.request(
+      {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || 443,
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(bodyStr),
+        },
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+        const decoder = new TextDecoder('utf-8');
+
+        if (status < 200 || status >= 300) {
+          let errBody = '';
+          res.on('data', (chunk) => {
+            resetIdleTimer();
+            errBody += decoder.decode(chunk, { stream: true });
+          });
+          res.on('end', () => {
+            errBody += decoder.decode();
+            succeed({ ok: false, status, errorText: errBody });
+          });
+          res.on('error', fail);
+          return;
         }
+
+        let buffer = '';
+        const modelParts = [];
+
+        const consumeLine = (rawLine) => {
+          const line = rawLine.trim();
+          if (!line.startsWith('data:')) return;
+          const jsonStr = line.slice(5).trim();
+          if (!jsonStr || jsonStr === '[DONE]') return;
+
+          try {
+            const chunk = JSON.parse(jsonStr);
+            const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+            for (const p of parts) {
+              if (p.thought && p.text) {
+                progress.thoughtChars += p.text.length;
+              } else if (!p.thought && p.text) {
+                progress.outputChars += p.text.length;
+              }
+
+              const last = modelParts[modelParts.length - 1];
+              const canMergeText =
+                last &&
+                typeof last.text === 'string' &&
+                typeof p.text === 'string' &&
+                !last.functionCall &&
+                !p.functionCall &&
+                !last.thoughtSignature &&
+                !p.thoughtSignature &&
+                Boolean(last.thought) === Boolean(p.thought);
+
+              if (canMergeText) {
+                last.text += p.text;
+              } else {
+                modelParts.push({ ...p });
+              }
+            }
+          } catch {
+            // 忽略非完整 JSON 行
+          }
+        };
+
+        res.on('data', (chunk) => {
+          progress.lastChunkAt = Date.now();
+          resetIdleTimer();
+          buffer += decoder.decode(chunk, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) consumeLine(line);
+        });
+
+        res.on('end', () => {
+          if (!res.complete) {
+            const err = new Error('SSE 連線在完成前被遠端中斷 (premature close)');
+            err.name = 'TimeoutError';
+            fail(err);
+            return;
+          }
+          const tail = buffer + decoder.decode();
+          if (tail.trim()) {
+            for (const line of tail.split('\n')) consumeLine(line);
+          }
+          succeed({ ok: true, status, parts: modelParts });
+        });
+
+        res.on('error', fail);
       }
-    } catch {
-      // 忽略非完整 JSON 行
-    }
-  };
+    );
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) consumeLine(line);
-  }
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        const err = new Error(`SSE 超過 ${IDLE_TIMEOUT_MS / 1000} 秒無任何新資料 (idle timeout)`);
+        err.name = 'TimeoutError';
+        req.destroy(err);
+        fail(err);
+      }, IDLE_TIMEOUT_MS);
+    };
 
-  const tail = buffer + decoder.decode();
-  if (tail.trim()) {
-    for (const line of tail.split('\n')) consumeLine(line);
-  }
+    hardTimer = setTimeout(() => {
+      const err = new Error(`單步請求超過上限 ${HARD_TIMEOUT_MS / 60000} 分鐘 (hard timeout)`);
+      err.name = 'TimeoutError';
+      req.destroy(err);
+      fail(err);
+    }, HARD_TIMEOUT_MS);
 
-  return textOutput
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
+    resetIdleTimer();
+    req.on('error', fail);
+    req.write(bodyStr);
+    req.end();
+  });
 }
 
-function buildSystemPrompt() {
-  return [
-    '你是這隻 TypeScript Cloudflare Workers AI 桌寵的「自我升級架構師」。',
-    '你的任務是根據主人的需求，在允許範圍內新增、局部修改、重寫或刪除「自訂插件工具 (src/plugins/*.ts)」與「PWA 前端介面 (src/ui.ts 及 src/ui/*.ts)」。',
-    '',
-    '【最高安全與核心保護規則】',
-    `1. 絕對不可損害或刪除核心功能（核心工具包含：${PROTECTED_CORE_TOOLS.join(', ')}，以及對話記憶、路由、自我升級本身）。`,
-    '2. 若主人要求刪除或破壞核心功能，必須回傳 {"rejected": true, "reject_reason": "原因說明", "summary": "", "operations": []}。',
-    '3. 僅可操作以下白名單路徑：',
-    '   - src/plugins/[a-z][a-z0-9-]*.ts（禁止刪除 src/plugins/registry.ts）',
-    '   - src/ui.ts（禁止刪除）與 src/ui/[a-z][a-z0-9-]*.ts（UI 拆檔模組，僅允許互相相對 import）',
-    '4. 新增或刪除任何插件檔時，必須同步更新 src/plugins/registry.ts，確保所有 import 與 CUSTOM_PLUGINS 陣列一致。',
-    '5. 新插件工具名稱（declaration.name）只能用 snake_case 英文，且不可與核心工具同名。',
-    '6. 後端執行環境為 Cloudflare Workers（不可使用 Node fs 模組或未安裝的第三方套件），僅可使用標準 Web API 與純 TypeScript strict mode（無 any、無未使用變數）。',
-    '7. UI 介面強制規範：',
-    '   - src/ui.ts 最終必須匯出完整 HTML 字串 `export const CHAT_HTML: string`（可由 src/ui/styles.ts、body.ts、script.ts 等拆檔模組組裝）。',
-    '   - 組裝後的 HTML 必須保留呼叫 `/v1/pet/interact`、`/v1/pet/upgrade/status`、Token 設定彈窗與 localStorage (`pet_bff_token`, `pet_user_id`)。',
-    '   - 若在 TypeScript 模板字串內寫前端 JS，務必留意反引號、`${` 與 `\\n` 跳脫；建議前端 JS 優先使用單引號與字串拼接避免語法錯誤。',
-    '',
-    '【局部修改 vs 整檔輸出策略】',
-    '- 對現有檔案做小範圍修改（改樣式、加按鈕、修 Bug）時，優先使用 `action: "patch"` 並提供精準的 `search`（含前後 2~3 行上下文確保唯一匹配）與 `replace`，大幅提升速度且避免誤刪既有功能。',
-    '- 新增檔案或進行大型架構重構（如 UI 拆檔）時，使用 `action: "upsert"` 輸出完整檔案內容。',
-    '- 若需求僅涉及後端工具，切勿改動 UI；若僅涉及 UI，切勿改動插件。',
-    '',
-    '【PluginTool 型別介面（位於 ../types）】',
-    'export interface PluginTool {',
-    '  declaration: {',
-    '    name: string;',
-    '    description: string;',
-    '    parameters: {',
-    '      type: "OBJECT";',
-    '      properties: Record<string, { type: string; description: string }>;',
-    '      required?: string[];',
-    '    };',
-    '  };',
-    '  execute: (args: Record<string, unknown>, ctx: { userId: string }) => Promise<Record<string, unknown>>;',
-    '}',
-    '',
-    '【輸出格式】嚴格回傳合法 JSON（不可夾雜解說文字）：',
-    '{',
-    '  "rejected": false,',
-    '  "summary": "繁體中文簡述本次變更",',
-    '  "operations": [',
-    '    { "action": "patch", "path": "src/ui/styles.ts", "patches": [{ "search": "原文片段", "replace": "替換片段" }] },',
-    '    { "action": "upsert", "path": "src/plugins/example.ts", "content": "完整檔案程式碼" },',
-    '    { "action": "delete", "path": "src/plugins/old.ts" }',
-    '  ]',
-    '}',
-    '8. src/plugins/lifecycle.ts 為每小時 Cron 生理時鐘規則檔，嚴禁刪除且必須保留 export function computeNextLifecycleState(state: PetState, ctx: LifecycleContext): PetState。',
-  ].join('\n');
+// 切換不同模型時清除前一個模型產生的 thought 與 thoughtSignature，避免跨模型 400 錯誤
+function sanitizeContentsForFallback(contents) {
+  return contents.map((turn) => {
+    if (turn.role !== 'model') return turn;
+    const cleaned = turn.parts
+      .filter((p) => !p.thought)
+      .map((p) => {
+        const copy = { ...p };
+        delete copy.thoughtSignature;
+        return copy;
+      });
+    return {
+      role: 'model',
+      parts: cleaned.length > 0 ? cleaned : [{ text: '...' }],
+    };
+  });
 }
 
-async function callModelWithFallback(modelsOrder, systemPrompt, contents, attemptNum) {
+async function callAgentStep(modelsOrder, lastModelUsed, systemPrompt, contents, turnNum) {
   const errors = [];
 
   modelLoop: for (const model of modelsOrder) {
     const generationConfig = model.startsWith('gemini-4')
-      ? {
-          responseMimeType: 'application/json',
-          thinkingConfig: { thinkingLevel: 'HIGH', includeThoughts: true },
-        }
-      : {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-        };
+      ? { thinkingConfig: { thinkingLevel: 'HIGH', includeThoughts: true } }
+      : { temperature: 0.2 };
+
+    const effectiveContents =
+      lastModelUsed && model !== lastModelUsed ? sanitizeContentsForFallback(contents) : contents;
 
     for (let retry = 0; retry <= MAX_TIMEOUT_RETRIES; retry += 1) {
       const retryTag = retry > 0 ? `（逾時重試 ${retry}/${MAX_TIMEOUT_RETRIES}）` : '';
-      await logStep(
-        'generating_code',
-        `第 ${attemptNum}/${MAX_HEAL_ATTEMPTS} 輪：呼叫 ${model}${retryTag}（SSE 串流）...`
-      );
+      const progress = {
+        thoughtChars: 0,
+        outputChars: 0,
+        startedAt: Date.now(),
+        lastChunkAt: Date.now(),
+      };
 
-      const progress = { thoughtChars: 0, outputChars: 0, startedAt: Date.now() };
       const heartbeatTimer = setInterval(() => {
         const sec = Math.floor((Date.now() - progress.startedAt) / 1000);
+        const idleSec = Math.floor((Date.now() - progress.lastChunkAt) / 1000);
         void updateHeartbeat(
-          `[輪次 ${attemptNum}/${MAX_HEAL_ATTEMPTS}] ${model}${retryTag} 執行中（${sec}s｜思考 ${progress.thoughtChars} 字｜輸出 ${progress.outputChars} 字）`
+          `[步驟 ${turnNum}/${MAX_AGENT_TURNS}] ${model}${retryTag} 思考中（${sec}s｜靜止 ${idleSec}s｜思考 ${progress.thoughtChars} 字）`
         );
       }, HEARTBEAT_INTERVAL_MS);
 
       try {
-        const res = await fetch(buildStreamEndpoint(model), {
-          method: 'POST',
-          signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const result = await streamVertexWithWatchdog(
+          buildStreamEndpoint(model),
+          {
             systemInstruction: { parts: [{ text: systemPrompt }] },
-            contents,
+            contents: effectiveContents,
+            tools: [{ functionDeclarations: AGENT_TOOL_DECLARATIONS }],
             generationConfig,
-          }),
-        });
+          },
+          progress
+        );
 
-        if (res.ok && res.body) {
-          const rawText = await readSseStream(res, progress);
-          if (!rawText) {
-            throw new Error(`${model} 串流結束但未回傳有效內容`);
-          }
-          await logStep(
-            'code_generated',
-            `${model}${retryTag} 已生成方案（思考 ${progress.thoughtChars} 字，輸出 ${progress.outputChars} 字）`
-          );
-          return { rawText, modelUsed: model };
+        if (result.ok) {
+          return { parts: result.parts || [], modelUsed: model };
         }
 
-        const errText = await res.text();
-        errors.push(`[${model}${retryTag} -> ${res.status}] ${errText.slice(0, 150)}`);
+        const errText = result.errorText || '';
+        errors.push(`[${model}${retryTag} -> ${result.status}] ${errText.slice(0, 160)}`);
 
-        // HTTP 408 / 504 屬於伺服端逾時：先原地重試同一模型
-        if ((res.status === 408 || res.status === 504) && retry < MAX_TIMEOUT_RETRIES) {
+        if ((result.status === 408 || result.status === 504) && retry < MAX_TIMEOUT_RETRIES) {
           await logStep(
             'model_timeout_retry',
-            `${model} 伺服端逾時 (${res.status})，${TIMEOUT_RETRY_DELAY_MS / 1000} 秒後重試同一模型（${retry + 1}/${MAX_TIMEOUT_RETRIES}）...`
+            `${model} 伺服端逾時 (${result.status})，${TIMEOUT_RETRY_DELAY_MS / 1000} 秒後重試...`
           );
           await sleep(TIMEOUT_RETRY_DELAY_MS);
           continue;
         }
 
-        await logStep('model_fallback', `${model} 回傳 ${res.status}，切換備援模型`);
-
-        if (![403, 404, 408, 429, 500, 502, 503, 504].includes(res.status)) {
+        await logStep('model_fallback', `${model} 回傳 ${result.status}，切換備援模型`);
+        if (![403, 404, 408, 429, 500, 502, 503, 504].includes(result.status)) {
           break modelLoop;
         }
         break;
@@ -606,7 +886,7 @@ async function callModelWithFallback(modelsOrder, systemPrompt, contents, attemp
         if (isTimeoutError(err) && retry < MAX_TIMEOUT_RETRIES) {
           await logStep(
             'model_timeout_retry',
-            `${model} 發生逾時 (${msg.slice(0, 60)})，${TIMEOUT_RETRY_DELAY_MS / 1000} 秒後重試同一模型（${retry + 1}/${MAX_TIMEOUT_RETRIES}）...`
+            `${model} 發生逾時 (${msg.slice(0, 60)})，${TIMEOUT_RETRY_DELAY_MS / 1000} 秒後重試...`
           );
           await sleep(TIMEOUT_RETRY_DELAY_MS);
           continue;
@@ -623,120 +903,32 @@ async function callModelWithFallback(modelsOrder, systemPrompt, contents, attemp
   throw new Error(`所有升級模型皆無法使用：${errors.join(' | ')}`);
 }
 
-// 自我修復主迴圈：生成 -> 規則檢查 -> 寫入/Patch -> UI 沙盒驗證 -> tsc 檢查
-async function generateAndVerifyWithHealing(editableFiles, readOnlyFiles) {
-  const readOnlyFilesText = Object.entries(readOnlyFiles)
-    .map(([filePath, content]) => `--- READ-ONLY FILE: ${filePath} ---\n${content}`)
-    .join('\n\n');
-
-  const existingFilesText = Object.entries(editableFiles)
-    .map(([filePath, content]) => `--- FILE: ${filePath} ---\n${content}`)
-    .join('\n\n');
-
-  const systemPrompt = buildSystemPrompt();
-  const contents = [
-    {
-      role: 'user',
-      parts: [
-        {
-          text: [
-            '【核心唯讀參考檔案（嚴禁出現在 operations 中，僅供對齊型別、API 路由與回傳欄位）】',
-            readOnlyFilesText,
-            '',
-            '【目前所有可升級檔案的完整內容（允許修改的範圍）】',
-            existingFilesText,
-            '',
-            `【主人的升級需求】\n${instruction}`,
-          ].join('\n'),
-        },
-      ],
-    },
-  ];
-
-  let activeModel = null;
-
-  for (let attempt = 1; attempt <= MAX_HEAL_ATTEMPTS; attempt += 1) {
-    const modelsOrder = activeModel
-      ? Array.from(new Set([activeModel, ...candidateModels]))
-      : candidateModels;
-
-    const { rawText, modelUsed } = await callModelWithFallback(
-      modelsOrder,
-      systemPrompt,
-      contents,
-      attempt
-    );
-    activeModel = modelUsed;
-
-    try {
-      let plan;
-      try {
-        plan = JSON.parse(rawText);
-      } catch (parseErr) {
-        throw new Error(`回傳內容並非合法 JSON：${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
-      }
-
-      if (plan.rejected) {
-        return { plan, modelUsed, attemptsUsed: attempt };
-      }
-
-      await logStep('validating', `第 ${attempt} 輪：執行白名單檢查並套用變更（支援 Patch）...`);
-      validateOperationRules(plan.operations);
-      const touchedPaths = applyOperationsToDisk(plan.operations);
-      validateTouchedContents(touchedPaths);
-
-      const touchedUi = plan.operations.some((op) => isUiPath(op.path));
-      if (touchedUi) {
-        await logStep('validating_ui', `第 ${attempt} 輪：執行 UI 跨檔組裝與內嵌 <script> 語法驗證...`);
-        validateWorkspaceUi();
-      }
-
-      await logStep('type_checking', `第 ${attempt} 輪：執行 npx tsc --noEmit 全專案型別檢查...`);
-      runTypeCheck();
-
-      const statusOut = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();
-      if (!statusOut) {
-        throw new Error('套用變更後檔案與現有版本完全相同，未產生任何實際差異');
-      }
-
-      await logStep('type_check_passed', `第 ${attempt} 輪驗證全數通過！`);
-      return { plan, modelUsed, attemptsUsed: attempt };
-    } catch (verifyErr) {
-      const errMsg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
-      resetWorkspace();
-
-      if (attempt >= MAX_HEAL_ATTEMPTS) {
-        throw new Error(`經過 ${MAX_HEAL_ATTEMPTS} 輪自動修復仍無法通過驗證：${errMsg}`);
-      }
-
-      await logStep(
-        'healing_retry',
-        `第 ${attempt} 輪未通過（${errMsg.split('\n')[0].slice(0, 100)}），正回饋錯誤自動修復（進入第 ${attempt + 1}/${MAX_HEAL_ATTEMPTS} 輪）...`
-      );
-
-      // 將上一輪輸出與具體錯誤回饋給模型，進行下一輪自動修復
-      contents.push({ role: 'model', parts: [{ text: rawText }] });
-      contents.push({
-        role: 'user',
-        parts: [
-          {
-            text: [
-              '你上一輪產出的升級方案未能通過自動驗證，工作區已完整還原為初始狀態。請針對以下錯誤修正並重新輸出「完整的合法 JSON 升級計畫」：',
-              '',
-              '【驗證錯誤訊息】',
-              errMsg,
-              '',
-              '【修復提示】',
-              '- 若為 Patch 找不到原文或重複命中，請補上準確上下文，或該檔案直接改用 action: "upsert"。',
-              '- 若為 UI <script> 或 TypeScript 語法錯誤，請特別檢查模板字串跳脫、import 路徑與型別標註。',
-            ].join('\n'),
-          },
-        ],
-      });
-    }
-  }
-
-  throw new Error('自我修復迴圈異常終止');
+// ============================================================================
+// 主工作流：自主規劃 -> 讀寫修改 -> 驗證修復 -> PR 與自動合併
+// ============================================================================
+function buildSystemPrompt() {
+  return [
+    '你是這隻 TypeScript Cloudflare Workers AI 桌寵的「自主升級工程師 Agent」。',
+    '你可以透過工具分步驟檢視專案、閱讀程式碼、修改或新增檔案、執行編譯與沙盒驗證，直到完全無誤後呼叫 finish_upgrade。',
+    '',
+    '【最高安全與核心保護規則】',
+    `1. 絕對不可損害或刪除核心功能（核心工具包含：${PROTECTED_CORE_TOOLS.join(', ')}，以及對話記憶、路由、自我升級本身）。`,
+    '2. 若主人要求刪除或破壞核心功能，請直接呼叫 reject_upgrade 說明原因。',
+    '3. 可編輯路徑僅限：src/plugins/[a-z][a-z0-9-]*.ts、src/ui.ts、src/ui/[a-z][a-z0-9-]*.ts。嚴禁刪除 src/plugins/registry.ts 與 src/ui.ts。',
+    '4. 唯讀參考檔案（src/types.ts、src/index.ts、src/tools.ts 等）僅供閱讀對齊 API 與型別，不可修改。',
+    '5. 新增或刪除插件時，必須同步更新 src/plugins/registry.ts，確保所有 import 與 CUSTOM_PLUGINS 陣列一致。',
+    '6. 後端僅能使用標準 Web API（fetch、URL、Intl、crypto）與純 TypeScript strict mode（無 any、無未使用變數、不新增外部 npm 套件）。',
+    '7. UI 介面規範：',
+    '   - src/ui.ts 必須匯出完整 HTML 字串 `export const CHAT_HTML: string`（可拆檔到 src/ui/*.ts 再由 src/ui.ts 相對 import 組裝）。',
+    '   - 組裝後的 HTML 必須保留 `/v1/pet/interact`、`/v1/pet/upgrade/status`、Token 設定彈窗與 localStorage (`pet_bff_token`, `pet_user_id`)。',
+    '   - 模板字串內嵌 JS 優先用單引號與字串拼接，避免反引號或 `${` 跳脫失誤。',
+    '',
+    '【高效多步工作流】',
+    '1. 先呼叫 read_file 閱讀與需求直接相關的檔案（若要新增插件先看 src/types.ts 與 src/plugins/registry.ts；若改 UI 先看 src/ui.ts 或 src/ui/*）。',
+    '2. 小範圍修改優先使用 patch_file；新增檔案或大重構（例如 UI 拆檔）使用 write_file。',
+    '3. 完成所有檔案變更後，必須呼叫 run_checks 驗證安全性、UI 沙盒與 TypeScript 編譯；若報錯請立即針對錯誤行數修復並重跑 run_checks。',
+    '4. 確認 run_checks 全數通過後，呼叫 finish_upgrade 結束任務並提供簡短繁體中文 summary。',
+  ].join('\n');
 }
 
 function stageAllowedPaths() {
@@ -756,47 +948,137 @@ function stageAllowedPaths() {
 
 async function main() {
   await initRecordFromRedis();
-  await logStep('actions_started', 'GitHub Actions 已就緒，正在讀取可升級檔案...');
+  await logStep('actions_started', 'GitHub Actions Agentic 升級引擎已啟動...');
 
   if (!apiKey || !projectId || !instruction) {
     throw new Error('缺少必要參數（GOOGLE_CLOUD_API_KEY / GCP_PROJECT_ID / instruction）');
   }
 
-  const editableFiles = readEditableFiles();
-  const readOnlyFiles = readReadOnlyFiles();
-  await logStep(
-    'files_loaded',
-    `已讀取 ${Object.keys(editableFiles).length} 個可升級檔案，及 ${Object.keys(readOnlyFiles).length} 個唯讀參考檔案`
-  );
+  const initialFiles = listProjectFiles();
+  const systemPrompt = buildSystemPrompt();
+  const contents = [
+    {
+      role: 'user',
+      parts: [
+        {
+          text: [
+            '【專案可檢視檔案清單】',
+            `- 可編輯檔案：${initialFiles.editable_files.join(', ')}`,
+            `- 唯讀參考檔案：${initialFiles.read_only_reference_files.join(', ')}`,
+            '',
+            `【主人的升級需求】\n${instruction}`,
+            '',
+            '請開始按步驟讀取必要檔案、規劃並實作修改，通過 run_checks 後呼叫 finish_upgrade。',
+          ].join('\n'),
+        },
+      ],
+    },
+  ];
 
-  const { plan, modelUsed, attemptsUsed } = await generateAndVerifyWithHealing(
-    editableFiles,
-    readOnlyFiles
-  );
+  const session = {
+    dirty: false,
+    uiTouched: false,
+    checksPassed: false,
+    touchedFiles: new Set(),
+    outcome: null,
+  };
 
-  if (plan.rejected) {
+  let activeModel = null;
+  let turnsUsed = 0;
+  let emptyNudges = 0;
+
+  for (let turn = 1; turn <= MAX_AGENT_TURNS; turn += 1) {
+    turnsUsed = turn;
+    const modelsOrder = activeModel
+      ? Array.from(new Set([activeModel, ...candidateModels]))
+      : candidateModels;
+
+    const { parts, modelUsed } = await callAgentStep(
+      modelsOrder,
+      activeModel,
+      systemPrompt,
+      contents,
+      turn
+    );
+
+    // 若中途切換了不同模型，同步清洗歷史簽名以確保後續輪次相容
+    if (activeModel && modelUsed !== activeModel) {
+      const cleaned = sanitizeContentsForFallback(contents);
+      contents.length = 0;
+      contents.push(...cleaned);
+    }
+    activeModel = modelUsed;
+
+    contents.push({ role: 'model', parts });
+
+    const functionCalls = parts.filter((p) => p.functionCall);
+
+    if (functionCalls.length === 0) {
+      emptyNudges += 1;
+      if (emptyNudges > 2) {
+        throw new Error('Agent 連續回覆純文字且未呼叫 finish_upgrade 或 reject_upgrade');
+      }
+      contents.push({
+        role: 'user',
+        parts: [
+          {
+            text: '請使用工具完成操作：若已完成所有修改請呼叫 run_checks 並呼叫 finish_upgrade；若需拒絕請呼叫 reject_upgrade。',
+          },
+        ],
+      });
+      continue;
+    }
+
+    const responseParts = [];
+    for (const fc of functionCalls) {
+      const call = fc.functionCall;
+      const result = await executeTool(call.name, call.args || {}, session);
+      responseParts.push({
+        functionResponse: {
+          name: call.name,
+          response: result,
+        },
+      });
+      if (session.outcome) break;
+    }
+
+    contents.push({ role: 'user', parts: responseParts });
+
+    if (session.outcome) break;
+  }
+
+  if (!session.outcome) {
+    resetWorkspace();
+    throw new Error(`已達最大自主步驟上限 (${MAX_AGENT_TURNS} 步) 仍未完成升級，工作區已還原`);
+  }
+
+  if (session.outcome.type === 'reject') {
+    resetWorkspace();
     record.status = 'rejected';
-    record.error = plan.reject_reason || '此操作可能影響核心功能，已拒絕執行';
-    await logStep('rejected', `安全攔截：${record.error}`);
+    record.error = session.outcome.reason;
+    await logStep('rejected', `安全攔截：${session.outcome.reason}`);
     return;
   }
 
+  // 建立升級分支、提交、開 PR 並自動合併
+  const summary = session.outcome.summary;
+  const changedList = getGitChangedFiles();
   const branchName = `self-upgrade/${Date.now()}`;
+
   execFileSync('git', ['config', 'user.name', 'Gemini Pet Bot']);
   execFileSync('git', ['config', 'user.email', 'gemini-pet-bot@users.noreply.github.com']);
   execFileSync('git', ['checkout', '-b', branchName]);
   stageAllowedPaths();
-  execFileSync('git', ['commit', '-m', `feat(self-upgrade): ${plan.summary}`]);
+  execFileSync('git', ['commit', '-m', `feat(self-upgrade): ${summary}`]);
 
   await logStep('pushing_pr', `正在推送分支 ${branchName} 並建立 Pull Request...`);
   execFileSync('git', ['push', 'origin', branchName]);
 
-  const healNote = attemptsUsed > 1 ? `（經第 ${attemptsUsed} 輪自動修復通過）` : '';
   const prBody = [
-    `由 **${modelUsed}** 在 GitHub Actions 產生${healNote}，已通過安全路徑白名單、UI 沙盒組裝與 \`tsc --noEmit\` 檢查。`,
+    `由 **${activeModel}** 透過多步 Agentic 引擎（共 ${turnsUsed} 步）完成，已通過安全掃描、UI 沙盒與 \`tsc --noEmit\` 檢查。`,
     '',
     '### 變更檔案',
-    ...plan.operations.map((op) => `- \`${op.action.toUpperCase()}\` \`${op.path}\``),
+    ...changedList.map((item) => `- \`${item}\``),
   ].join('\n');
 
   const prUrl = execFileSync(
@@ -805,7 +1087,7 @@ async function main() {
       'pr',
       'create',
       '--title',
-      `🤖 桌寵自我升級：${plan.summary}`,
+      `🤖 桌寵自我升級：${summary}`,
       '--body',
       prBody,
       '--base',
@@ -817,8 +1099,8 @@ async function main() {
   ).trim();
 
   record.pr_url = prUrl;
-  record.summary = `[${modelUsed}] ${plan.summary}`;
-  record.changed_files = plan.operations.map((o) => `${o.action}:${o.path}`);
+  record.summary = `[${activeModel} · ${turnsUsed}步] ${summary}`;
+  record.changed_files = changedList;
   await logStep('merging_pr', 'PR 已建立，正在自動合併至主分支...');
 
   execFileSync('gh', ['pr', 'merge', prUrl, '--squash', '--delete-branch'], { encoding: 'utf8' });
@@ -826,11 +1108,16 @@ async function main() {
   record.status = 'merged';
   await logStep(
     'merged',
-    `升級已自動合併至 main${healNote}！Cloudflare 約 30 秒後完成自動部署，重新整理頁面即可看到新介面。`
+    `升級已自動合併至 main（共 ${turnsUsed} 步）！Cloudflare 約 30 秒後完成部署，重新整理頁面即可生效。`
   );
 }
 
 main().catch(async (err) => {
+  try {
+    resetWorkspace();
+  } catch {
+    // 忽略清理異常
+  }
   record.status = 'failed';
   record.error = err instanceof Error ? err.message : String(err);
   await logStep('failed', `任務失敗：${record.error}`);
