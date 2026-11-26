@@ -44,9 +44,41 @@ export interface ProactiveUserStore {
   upgradeTracking: UpgradeTrackingState;
 }
 
+export interface KvLatestUpgradeSnapshot {
+  status: string;
+  step: string;
+  request: string;
+  summary: string;
+  prUrl: string;
+  actionsUrl: string;
+  changedFiles: string[];
+  logs: string[];
+  error: string;
+  startedAt: string | null;
+  updatedAt: string | null;
+}
+
+interface KvUpgradeAnalysis {
+  hasKv: boolean;
+  statusLower: string;
+  stepLower: string;
+  isRejected: boolean;
+  isCancelled: boolean;
+  isTimedOut: boolean;
+  isFailedOrCancelled: boolean;
+  isMergedSuccess: boolean;
+  isRunning: boolean;
+  verdict: 'success' | 'rejected' | 'cancelled' | 'timed_out' | 'failure' | 'running' | 'idle';
+  reasons: string[];
+}
+
 interface KvNamespaceLike {
   get: (key: string) => Promise<string | null>;
   put: (key: string, value: string) => Promise<unknown>;
+}
+
+interface StateServiceLike {
+  getUpgradeStatus?: (userId: string) => Promise<unknown>;
 }
 
 interface CacheLike {
@@ -92,11 +124,33 @@ interface DueNotificationItem extends ProactiveRule {
 
 const MEMORY_STORE = new Map<string, ProactiveUserStore>();
 const DEFAULT_TIMEZONE = 'Asia/Taipei';
+const DEFAULT_REPO = 'ZeroAker/gemini-pet-bff';
 const DEFAULT_WORKFLOW_FILE = 'self-upgrade-runner.yml';
 const TIME_PATTERN = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const RUN_ID_PATTERN = /^\d+$/;
 const WORKFLOW_PATTERN = /^[A-Za-z0-9_.-]+$/;
+
+const REJECTION_KEYWORD_PATTERN =
+  /(\brejected\b|reject_upgrade|安全閘門|拒絕修改|拒絕升級|受保護|核心模組|核心功能|白名單|不在可編輯|不可修改|禁止刪除|PROTECTED_CORE)/i;
+
+const KV_CODE_ERROR_PATTERN =
+  /(error\s+TS\d+|tsc\s+--noEmit.*(?:失敗|錯誤|error)|型別檢查(?:失敗|未通過|錯誤)|型別錯誤|語法錯誤|語法驗證(?:失敗|未通過)|SyntaxError|TypeError|沙盒驗證(?:失敗|未通過)|安全掃描(?:失敗|未通過)|編譯失敗|编译失败|run_checks\s*(?:失敗|未通過))/i;
+
+const KV_MERGE_SUCCESS_PATTERN = /(升級已自動合併至\s*main|已自動合併至\s*main|merged\s+to\s+main)/i;
+
+const LOG_ACCESS_NOISE_PATTERN =
+  /(無法直接下載原始純文字\s*log|無法下載純文字\s*log|原始\s*log\s*下載通常需要認證|下載原始純文字\s*log\s*逾時|完成後才可下載完整純文字\s*log|actions\/jobs\/\d+\/logs.*403|HTTP\s*403.*原始.*log|已達未認證速率上限)/i;
+
+const ACTIONS_FAILURE_CONCLUSIONS = new Set([
+  'cancelled',
+  'canceled',
+  'failure',
+  'timed_out',
+  'action_required',
+  'startup_failure',
+  'stale',
+]);
 
 function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -125,6 +179,12 @@ function asPositiveInt(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function isIgnorableLogAccessWarning(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  return LOG_ACCESS_NOISE_PATTERN.test(trimmed);
+}
+
 function normalizeTime(raw: string, fallback = '09:00'): string {
   const match = TIME_PATTERN.exec(raw.trim());
   if (!match) return fallback;
@@ -151,10 +211,32 @@ function parseGitHubActionsUrl(rawUrl: string): ParsedGitHubTarget {
   if (!rawUrl) return {};
   try {
     const parsed = new URL(rawUrl);
-    if (parsed.hostname !== 'github.com' && parsed.hostname !== 'www.github.com') {
+    const host = parsed.hostname.toLowerCase();
+    const parts = parsed.pathname.split('/').filter((segment) => segment.length > 0);
+
+    if (host === 'api.github.com' && parts[0] === 'repos') {
+      const owner = parts[1];
+      const repoName = parts[2];
+      if (!owner || !repoName) return {};
+      const candidateRepo = `${owner}/${repoName}`;
+      if (!REPO_PATTERN.test(candidateRepo)) return {};
+      const result: ParsedGitHubTarget = { repo: candidateRepo };
+      if (parts[3] === 'actions' && parts[4] === 'runs' && parts[5] && RUN_ID_PATTERN.test(parts[5])) {
+        result.runId = parts[5];
+      } else if (
+        parts[3] === 'actions' &&
+        parts[4] === 'workflows' &&
+        parts[5] &&
+        WORKFLOW_PATTERN.test(parts[5])
+      ) {
+        result.workflowFile = parts[5];
+      }
+      return result;
+    }
+
+    if (host !== 'github.com' && host !== 'www.github.com') {
       return {};
     }
-    const parts = parsed.pathname.split('/').filter((segment) => segment.length > 0);
     const owner = parts[0];
     const repoName = parts[1];
     if (!owner || !repoName) return {};
@@ -168,7 +250,16 @@ function parseGitHubActionsUrl(rawUrl: string): ParsedGitHubTarget {
     }
     return result;
   } catch {
-    return {};
+    const fallback: ParsedGitHubTarget = {};
+    const repoMatch = /github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/.exec(rawUrl);
+    if (repoMatch?.[1] && REPO_PATTERN.test(repoMatch[1])) {
+      fallback.repo = repoMatch[1];
+    }
+    const runMatch = /\/actions\/runs\/(\d+)/.exec(rawUrl);
+    if (runMatch?.[1] && RUN_ID_PATTERN.test(runMatch[1])) {
+      fallback.runId = runMatch[1];
+    }
+    return fallback;
   }
 }
 
@@ -222,6 +313,7 @@ function extractGeminiApiKey(ctx: { userId: string }, args: Record<string, unkno
     'apiKey',
     'GEMINI_API_KEY',
     'GOOGLE_API_KEY',
+    'GOOGLE_CLOUD_API_KEY',
     'GEMINI_KEY',
     'API_KEY',
   ]);
@@ -234,8 +326,369 @@ function extractGitHubToken(ctx: { userId: string }, args: Record<string, unknow
 }
 
 function extractDefaultRepo(ctx: { userId: string }): string {
-  const candidate = extractEnvString(ctx, ['GITHUB_REPOSITORY', 'GITHUB_REPO', 'UPGRADE_REPO']);
-  return REPO_PATTERN.test(candidate) ? candidate : '';
+  const directRepo = extractEnvString(ctx, ['GITHUB_REPOSITORY', 'UPGRADE_REPO']);
+  if (REPO_PATTERN.test(directRepo)) return directRepo;
+
+  const owner = extractEnvString(ctx, ['GITHUB_OWNER']);
+  const repoName = extractEnvString(ctx, ['GITHUB_REPO']);
+  if (owner && repoName) {
+    const combined = `${owner}/${repoName}`;
+    if (REPO_PATTERN.test(combined)) return combined;
+  }
+  if (REPO_PATTERN.test(repoName)) {
+    return repoName;
+  }
+  return DEFAULT_REPO;
+}
+
+function parseLogsInput(rawLogs: unknown): string[] {
+  if (Array.isArray(rawLogs)) {
+    const list: string[] = [];
+    for (const item of rawLogs) {
+      const s = asTrimmedString(item);
+      if (s) list.push(s);
+    }
+    return list;
+  }
+  if (typeof rawLogs === 'string' && rawLogs.trim().length > 0) {
+    return rawLogs
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+  }
+  return [];
+}
+
+function normalizeKvUpgradeObject(raw: unknown): KvLatestUpgradeSnapshot | null {
+  if (!raw) return null;
+  let target: unknown = raw;
+  if (typeof target === 'string') {
+    const trimmed = target.trim();
+    if (!trimmed || trimmed === '尚無升級紀錄') return null;
+    try {
+      target = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  if (!target || typeof target !== 'object') return null;
+  let obj = target as Record<string, unknown>;
+
+  if (obj.result && typeof obj.result === 'string') {
+    try {
+      const inner = JSON.parse(obj.result) as unknown;
+      if (inner && typeof inner === 'object') {
+        obj = inner as Record<string, unknown>;
+      }
+    } catch {
+      // ignore
+    }
+  } else if (obj.result && typeof obj.result === 'object') {
+    obj = obj.result as Record<string, unknown>;
+  }
+
+  if (obj.latest_upgrade && typeof obj.latest_upgrade === 'object') {
+    obj = obj.latest_upgrade as Record<string, unknown>;
+  } else if (typeof obj.latest_upgrade === 'string') {
+    return normalizeKvUpgradeObject(obj.latest_upgrade);
+  }
+
+  const status = asTrimmedString(obj.status ?? obj.upgrade_status);
+  const step = asTrimmedString(obj.step ?? obj.upgrade_step);
+  const request = asTrimmedString(obj.request);
+  const summary = asTrimmedString(obj.summary ?? obj.upgrade_summary);
+  const prUrl = asTrimmedString(obj.pr_url ?? obj.prUrl);
+  const actionsUrl = asTrimmedString(obj.actions_url ?? obj.actionsUrl);
+  const error = asTrimmedString(obj.error ?? obj.upgrade_error);
+  const startedAt = asTrimmedString(obj.started_at ?? obj.startedAt) || null;
+  const updatedAt = asTrimmedString(obj.updated_at ?? obj.updatedAt) || null;
+  const logs = parseLogsInput(obj.logs ?? obj.upgrade_logs);
+  const rawFiles = Array.isArray(obj.changed_files ?? obj.changedFiles)
+    ? ((obj.changed_files ?? obj.changedFiles) as unknown[])
+    : [];
+  const changedFiles = rawFiles.map((f) => asTrimmedString(f)).filter((f) => f.length > 0);
+
+  if (status.toLowerCase() === 'idle' && !actionsUrl && logs.length === 0 && !error) {
+    return null;
+  }
+  if (!status && !step && !actionsUrl && logs.length === 0 && !error && !summary && !request) {
+    return null;
+  }
+
+  return {
+    status: status || 'running',
+    step,
+    request,
+    summary,
+    prUrl,
+    actionsUrl,
+    changedFiles,
+    logs,
+    error,
+    startedAt,
+    updatedAt,
+  };
+}
+
+async function loadKvLatestUpgrade(
+  userId: string,
+  args: Record<string, unknown>,
+  ctx: { userId: string }
+): Promise<KvLatestUpgradeSnapshot | null> {
+  let kvSnapshot: KvLatestUpgradeSnapshot | null = null;
+  const rawCtx = ctx as unknown as Record<string, unknown>;
+
+  if (rawCtx.latest_upgrade) {
+    kvSnapshot = normalizeKvUpgradeObject(rawCtx.latest_upgrade);
+  }
+
+  if (!kvSnapshot && rawCtx.stateSvc && typeof rawCtx.stateSvc === 'object') {
+    const svc = rawCtx.stateSvc as StateServiceLike;
+    if (typeof svc.getUpgradeStatus === 'function') {
+      try {
+        const res = await svc.getUpgradeStatus(userId);
+        kvSnapshot = normalizeKvUpgradeObject(res);
+      } catch {
+        // ignore stateSvc read error
+      }
+    }
+  }
+
+  if (!kvSnapshot) {
+    const kv = extractKvFromContext(ctx);
+    if (kv) {
+      const candidateKeys = [`upgrade:${userId}`, `latest_upgrade:${userId}`, 'latest_upgrade', 'upgrade:default_user'];
+      for (const k of candidateKeys) {
+        try {
+          const val = await kv.get(k);
+          if (val) {
+            const parsed = normalizeKvUpgradeObject(val);
+            if (parsed) {
+              kvSnapshot = parsed;
+              break;
+            }
+          }
+        } catch {
+          // continue next key
+        }
+      }
+    }
+  }
+
+  if (!kvSnapshot) {
+    const redisUrl = extractEnvString(ctx, ['UPSTASH_REDIS_REST_URL']);
+    const redisToken = extractEnvString(ctx, ['UPSTASH_REDIS_REST_TOKEN']);
+    if (redisUrl && redisToken) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4500);
+      try {
+        const res = await fetch(redisUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${redisToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(['GET', `upgrade:${userId}`]),
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { result?: unknown };
+          kvSnapshot = normalizeKvUpgradeObject(data.result);
+        }
+      } catch {
+        // ignore upstash network error
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  const fromArgsObj = normalizeKvUpgradeObject(args.latest_upgrade);
+  const explicitStatus = asTrimmedString(args.upgrade_status ?? args.status);
+  const explicitStep = asTrimmedString(args.upgrade_step ?? args.step);
+  const explicitActionsUrl = asTrimmedString(args.actions_url);
+  const explicitPrUrl = asTrimmedString(args.pr_url);
+  const explicitSummary = asTrimmedString(args.upgrade_summary ?? args.summary);
+  const explicitError = asTrimmedString(args.upgrade_error ?? args.error);
+  const explicitStartedAt = asTrimmedString(args.started_at ?? args.startedAt);
+  const explicitUpdatedAt = asTrimmedString(args.updated_at ?? args.updatedAt);
+  const explicitLogs = parseLogsInput(args.upgrade_logs ?? args.logs);
+
+  const hasExplicitOverlay =
+    fromArgsObj !== null ||
+    explicitStatus !== '' ||
+    explicitStep !== '' ||
+    explicitActionsUrl !== '' ||
+    explicitPrUrl !== '' ||
+    explicitSummary !== '' ||
+    explicitError !== '' ||
+    explicitStartedAt !== '' ||
+    explicitLogs.length > 0;
+
+  if (!kvSnapshot && !hasExplicitOverlay) {
+    return null;
+  }
+
+  const base = kvSnapshot ??
+    fromArgsObj ?? {
+      status: explicitStatus || 'running',
+      step: explicitStep,
+      request: '',
+      summary: explicitSummary,
+      prUrl: explicitPrUrl,
+      actionsUrl: explicitActionsUrl,
+      changedFiles: [],
+      logs: [],
+      error: explicitError,
+      startedAt: explicitStartedAt || null,
+      updatedAt: explicitUpdatedAt || null,
+    };
+
+  if (fromArgsObj && kvSnapshot) {
+    if (fromArgsObj.status && fromArgsObj.status !== 'running') base.status = fromArgsObj.status;
+    if (fromArgsObj.step) base.step = fromArgsObj.step;
+    if (fromArgsObj.actionsUrl) {
+      const pArg = parseGitHubActionsUrl(fromArgsObj.actionsUrl);
+      const pBase = parseGitHubActionsUrl(base.actionsUrl);
+      if (pArg.runId || !pBase.runId) {
+        base.actionsUrl = fromArgsObj.actionsUrl;
+      }
+    }
+    if (fromArgsObj.prUrl) base.prUrl = fromArgsObj.prUrl;
+    if (fromArgsObj.summary) base.summary = fromArgsObj.summary;
+    if (fromArgsObj.error) base.error = fromArgsObj.error;
+    if (fromArgsObj.startedAt) base.startedAt = fromArgsObj.startedAt;
+    if (fromArgsObj.updatedAt) base.updatedAt = fromArgsObj.updatedAt;
+    for (const l of fromArgsObj.logs) {
+      if (!base.logs.includes(l)) base.logs.push(l);
+    }
+  }
+
+  if (explicitStatus) base.status = explicitStatus;
+  if (explicitStep) base.step = explicitStep;
+  if (explicitActionsUrl) {
+    const pExp = parseGitHubActionsUrl(explicitActionsUrl);
+    const pBase = parseGitHubActionsUrl(base.actionsUrl);
+    if (pExp.runId || !pBase.runId) {
+      base.actionsUrl = explicitActionsUrl;
+    }
+  }
+  if (explicitPrUrl) base.prUrl = explicitPrUrl;
+  if (explicitSummary) base.summary = explicitSummary;
+  if (explicitError) base.error = explicitError;
+  if (explicitStartedAt) base.startedAt = explicitStartedAt;
+  if (explicitUpdatedAt) base.updatedAt = explicitUpdatedAt;
+  for (const l of explicitLogs) {
+    if (!base.logs.includes(l)) base.logs.push(l);
+  }
+
+  return base;
+}
+
+function analyzeKvLatestUpgrade(kv: KvLatestUpgradeSnapshot | null): KvUpgradeAnalysis {
+  if (!kv) {
+    return {
+      hasKv: false,
+      statusLower: 'idle',
+      stepLower: '',
+      isRejected: false,
+      isCancelled: false,
+      isTimedOut: false,
+      isFailedOrCancelled: false,
+      isMergedSuccess: false,
+      isRunning: false,
+      verdict: 'idle',
+      reasons: [],
+    };
+  }
+
+  const statusLower = kv.status.trim().toLowerCase();
+  const stepLower = kv.step.trim().toLowerCase();
+  const cleanError = isIgnorableLogAccessWarning(kv.error) ? '' : kv.error.trim();
+  const cleanLogs = kv.logs.map((l) => l.trim()).filter((l) => l.length > 0 && !isIgnorableLogAccessWarning(l));
+
+  const rejectionLines = cleanLogs.filter((l) => REJECTION_KEYWORD_PATTERN.test(l));
+  const codeErrorLines = cleanLogs.filter((l) => KV_CODE_ERROR_PATTERN.test(l));
+  const generalFailLines = cleanLogs.filter((l) =>
+    /(?:^|\s)(?:❌|🚫|⚠️|錯誤[:：]|失敗[:：]|拒絕原因[:：]|Execution failed|Process completed with exit code [1-9])/i.test(l)
+  );
+  const hasMergedLog = cleanLogs.some((l) => KV_MERGE_SUCCESS_PATTERN.test(l));
+
+  const isRejected =
+    statusLower === 'rejected' ||
+    stepLower === 'rejected' ||
+    REJECTION_KEYWORD_PATTERN.test(cleanError) ||
+    rejectionLines.length > 0;
+
+  const isCancelled =
+    statusLower === 'cancelled' ||
+    statusLower === 'canceled' ||
+    stepLower === 'cancelled' ||
+    stepLower === 'canceled';
+
+  const isTimedOut = statusLower === 'timed_out' || stepLower === 'timed_out';
+
+  const isFailedStatus =
+    statusLower === 'failed' ||
+    statusLower === 'error' ||
+    stepLower === 'failed' ||
+    stepLower === 'error';
+
+  const isFailedOrCancelled =
+    isRejected ||
+    isCancelled ||
+    isTimedOut ||
+    isFailedStatus ||
+    codeErrorLines.length > 0 ||
+    cleanError.length > 0;
+
+  const isMergedSuccess =
+    !isFailedOrCancelled &&
+    (statusLower === 'merged' || stepLower === 'merged' || hasMergedLog);
+
+  const isRunning =
+    !isFailedOrCancelled &&
+    !isMergedSuccess &&
+    (isInProgressStatus(statusLower) || statusLower === '');
+
+  const reasons: string[] = [];
+  const pushReason = (r: string) => {
+    const trimmed = r.trim();
+    if (trimmed && !isIgnorableLogAccessWarning(trimmed) && !reasons.includes(trimmed)) {
+      reasons.push(trimmed);
+    }
+  };
+
+  if (cleanError) pushReason(cleanError);
+  for (const line of rejectionLines) pushReason(line);
+  for (const line of codeErrorLines) pushReason(line);
+  for (const line of generalFailLines) pushReason(line);
+  if (isFailedOrCancelled && reasons.length === 0 && kv.step && !isInProgressStatus(kv.step) && stepLower !== 'merged') {
+    pushReason(`停在階段：${kv.step}`);
+  }
+
+  let verdict: KvUpgradeAnalysis['verdict'] = 'running';
+  if (isRejected) verdict = 'rejected';
+  else if (isCancelled) verdict = 'cancelled';
+  else if (isTimedOut) verdict = 'timed_out';
+  else if (isFailedOrCancelled) verdict = 'failure';
+  else if (isMergedSuccess) verdict = 'success';
+  else if (isRunning) verdict = 'running';
+  else verdict = 'idle';
+
+  return {
+    hasKv: true,
+    statusLower,
+    stepLower,
+    isRejected,
+    isCancelled,
+    isTimedOut,
+    isFailedOrCancelled,
+    isMergedSuccess,
+    isRunning,
+    verdict,
+    reasons: reasons.slice(0, 6),
+  };
 }
 
 async function generateAiCareSentence(
@@ -354,12 +807,15 @@ function sanitizeUpgradeTracking(raw: unknown): UpgradeTrackingState {
     const str = asTrimmedString(k);
     if (str) reportedRunKeys.push(str);
   }
+  const rawActionsUrl = asTrimmedString(obj.actionsUrl);
+  const parsedUrl = parseGitHubActionsUrl(rawActionsUrl);
+  const explicitRunId = asTrimmedString(obj.runId);
   return {
     tracking: asBoolean(obj.tracking, false),
-    repo: asTrimmedString(obj.repo),
-    workflowFile: asTrimmedString(obj.workflowFile) || DEFAULT_WORKFLOW_FILE,
-    runId: asTrimmedString(obj.runId),
-    actionsUrl: asTrimmedString(obj.actionsUrl),
+    repo: asTrimmedString(obj.repo) || parsedUrl.repo || '',
+    workflowFile: asTrimmedString(obj.workflowFile) || parsedUrl.workflowFile || DEFAULT_WORKFLOW_FILE,
+    runId: explicitRunId || parsedUrl.runId || '',
+    actionsUrl: rawActionsUrl,
     prUrl: asTrimmedString(obj.prUrl),
     summary: asTrimmedString(obj.summary),
     lastKnownStatus: asTrimmedString(obj.lastKnownStatus) || 'idle',
@@ -600,68 +1056,162 @@ function isInProgressStatus(status: string): boolean {
   );
 }
 
-function registerUpgradeTracking(
+function hasRunKeyBeenReported(reportedRunKeys: string[], keyPrefix: string): boolean {
+  if (!keyPrefix) return false;
+  return reportedRunKeys.some((k) => k === keyPrefix || k.startsWith(`${keyPrefix}:`));
+}
+
+function syncTrackingFromKvAndArgs(
   store: ProactiveUserStore,
+  kvLatest: KvLatestUpgradeSnapshot | null,
   args: Record<string, unknown>,
   ctx: { userId: string },
-  nowIso: string
-): { registered: boolean; alreadyReported: boolean } {
-  const rawActionsUrl = asTrimmedString(args.actions_url);
-  const parsedUrl = parseGitHubActionsUrl(rawActionsUrl);
-  const repoArg = asTrimmedString(args.repo);
-  const resolvedRepo = repoArg || parsedUrl.repo || store.upgradeTracking.repo || extractDefaultRepo(ctx);
+  nowIso: string,
+  forceRegister: boolean
+): { registered: boolean; alreadyReported: boolean; changed: boolean } {
+  const track = store.upgradeTracking;
+  let changed = false;
+
+  const rawArgUrl = asTrimmedString(args.actions_url);
+  const rawKvUrl = kvLatest?.actionsUrl || '';
+  const parsedArgUrl = parseGitHubActionsUrl(rawArgUrl);
+  const parsedKvUrl = parseGitHubActionsUrl(rawKvUrl);
+  const parsedTrackUrl = parseGitHubActionsUrl(track.actionsUrl);
+
+  const explicitRunId = asTrimmedString(args.run_id);
+  const candidateRunId =
+    explicitRunId ||
+    parsedArgUrl.runId ||
+    parsedKvUrl.runId ||
+    parsedTrackUrl.runId ||
+    track.runId ||
+    '';
+
+  const resolvedRepo =
+    asTrimmedString(args.repo) ||
+    parsedArgUrl.repo ||
+    parsedKvUrl.repo ||
+    track.repo ||
+    parsedTrackUrl.repo ||
+    extractDefaultRepo(ctx);
+
   const resolvedWorkflow =
     asTrimmedString(args.workflow_file) ||
-    parsedUrl.workflowFile ||
-    store.upgradeTracking.workflowFile ||
+    parsedArgUrl.workflowFile ||
+    parsedKvUrl.workflowFile ||
+    track.workflowFile ||
+    parsedTrackUrl.workflowFile ||
     DEFAULT_WORKFLOW_FILE;
-  const resolvedRunId = asTrimmedString(args.run_id) || parsedUrl.runId || '';
-  const resolvedPrUrl = asTrimmedString(args.pr_url) || store.upgradeTracking.prUrl;
-  const resolvedSummary = asTrimmedString(args.upgrade_summary ?? args.summary ?? args.title) || store.upgradeTracking.summary;
-  const resolvedStatus = asTrimmedString(args.upgrade_status ?? args.status) || 'running';
-  const resolvedError = asTrimmedString(args.upgrade_error ?? args.error);
 
-  if (resolvedRunId) {
-    const alreadyDone = store.upgradeTracking.reportedRunKeys.some((k) => k.startsWith(`${resolvedRunId}:`));
-    if (alreadyDone) {
-      return { registered: false, alreadyReported: true };
+  const resolvedActionsUrl =
+    (parsedArgUrl.runId ? rawArgUrl : '') ||
+    (parsedKvUrl.runId ? rawKvUrl : '') ||
+    rawArgUrl ||
+    rawKvUrl ||
+    track.actionsUrl;
+
+  const resolvedPrUrl = asTrimmedString(args.pr_url) || kvLatest?.prUrl || track.prUrl;
+  const resolvedSummary =
+    asTrimmedString(args.upgrade_summary ?? args.summary ?? args.title) ||
+    kvLatest?.summary ||
+    kvLatest?.request ||
+    track.summary;
+  const resolvedStartedAt =
+    asTrimmedString(args.started_at ?? args.startedAt) ||
+    kvLatest?.startedAt ||
+    track.startedAt ||
+    (forceRegister ? nowIso : null);
+
+  const explicitError = asTrimmedString(args.upgrade_error ?? args.error) || kvLatest?.error || '';
+  const cleanExplicitError = isIgnorableLogAccessWarning(explicitError) ? '' : explicitError;
+
+  const isAlreadyReportedForRun =
+    candidateRunId !== '' && hasRunKeyBeenReported(track.reportedRunKeys, candidateRunId);
+  const isAlreadyReportedForStart =
+    candidateRunId === '' &&
+    resolvedStartedAt !== null &&
+    hasRunKeyBeenReported(track.reportedRunKeys, resolvedStartedAt);
+
+  if (forceRegister && (isAlreadyReportedForRun || isAlreadyReportedForStart)) {
+    return { registered: false, alreadyReported: true, changed: false };
+  }
+
+  const isNewSpecificRun = candidateRunId !== '' && candidateRunId !== track.runId && !isAlreadyReportedForRun;
+  const isNewStartSession =
+    candidateRunId === '' &&
+    kvLatest?.startedAt != null &&
+    kvLatest.startedAt !== track.startedAt &&
+    !hasRunKeyBeenReported(track.reportedRunKeys, kvLatest.startedAt);
+
+  if (forceRegister || isNewSpecificRun || isNewStartSession || (!track.tracking && kvLatest && !isAlreadyReportedForRun && !isAlreadyReportedForStart)) {
+    track.tracking = true;
+    track.reported = false;
+    track.reportedAt = null;
+    track.lastKnownConclusion = null;
+    changed = true;
+  }
+
+  if (resolvedRepo && track.repo !== resolvedRepo) {
+    track.repo = resolvedRepo;
+    changed = true;
+  }
+  if (resolvedWorkflow && track.workflowFile !== resolvedWorkflow) {
+    track.workflowFile = resolvedWorkflow;
+    changed = true;
+  }
+  if (candidateRunId && track.runId !== candidateRunId) {
+    track.runId = candidateRunId;
+    changed = true;
+  } else if (forceRegister && explicitRunId === '' && !parsedArgUrl.runId && !parsedKvUrl.runId && isNewStartSession) {
+    track.runId = '';
+    changed = true;
+  }
+  if (resolvedActionsUrl && track.actionsUrl !== resolvedActionsUrl) {
+    track.actionsUrl = resolvedActionsUrl;
+    changed = true;
+  }
+  if (resolvedPrUrl && track.prUrl !== resolvedPrUrl) {
+    track.prUrl = resolvedPrUrl;
+    changed = true;
+  }
+  if (resolvedSummary && track.summary !== resolvedSummary) {
+    track.summary = resolvedSummary;
+    changed = true;
+  }
+  if (resolvedStartedAt && track.startedAt !== resolvedStartedAt) {
+    track.startedAt = resolvedStartedAt;
+    changed = true;
+  }
+  if (cleanExplicitError && track.lastKnownError !== cleanExplicitError) {
+    track.lastKnownError = cleanExplicitError;
+    changed = true;
+  }
+
+  const rawStatus = asTrimmedString(args.upgrade_status ?? args.status) || kvLatest?.status || track.lastKnownStatus || 'running';
+  const lowerStatus = rawStatus.toLowerCase();
+  if (
+    lowerStatus === 'rejected' ||
+    lowerStatus === 'failed' ||
+    lowerStatus === 'error' ||
+    lowerStatus === 'cancelled' ||
+    lowerStatus === 'canceled' ||
+    lowerStatus === 'timed_out' ||
+    lowerStatus === 'merged'
+  ) {
+    if (track.lastKnownStatus !== lowerStatus) {
+      track.lastKnownStatus = lowerStatus;
+      changed = true;
+    }
+  } else if (track.tracking && !track.reported) {
+    const nextInProgress = isInProgressStatus(rawStatus) ? rawStatus : 'running';
+    if (track.lastKnownStatus !== nextInProgress) {
+      track.lastKnownStatus = nextInProgress;
+      changed = true;
     }
   }
 
-  const isNewRun = resolvedRunId !== '' && resolvedRunId !== store.upgradeTracking.runId;
-  store.upgradeTracking.tracking = true;
-  store.upgradeTracking.reported = false;
-  store.upgradeTracking.repo = resolvedRepo;
-  store.upgradeTracking.workflowFile = resolvedWorkflow;
-  if (resolvedRunId) {
-    store.upgradeTracking.runId = resolvedRunId;
-  } else if (isNewRun) {
-    store.upgradeTracking.runId = '';
-  }
-  if (rawActionsUrl) {
-    store.upgradeTracking.actionsUrl = rawActionsUrl;
-  }
-  if (resolvedPrUrl) {
-    store.upgradeTracking.prUrl = resolvedPrUrl;
-  }
-  if (resolvedSummary) {
-    store.upgradeTracking.summary = resolvedSummary;
-  }
-  const lowerStatus = resolvedStatus.toLowerCase();
-  if (lowerStatus === 'rejected' || lowerStatus === 'failed' || lowerStatus === 'cancelled' || lowerStatus === 'timed_out') {
-    store.upgradeTracking.lastKnownStatus = lowerStatus;
-  } else {
-    store.upgradeTracking.lastKnownStatus = isInProgressStatus(resolvedStatus) ? resolvedStatus : 'running';
-  }
-  store.upgradeTracking.lastKnownConclusion = null;
-  store.upgradeTracking.lastKnownError = resolvedError;
-  store.upgradeTracking.startedAt = nowIso;
-  store.upgradeTracking.reportedAt = null;
-
-  return { registered: true, alreadyReported: false };
+  return { registered: track.tracking, alreadyReported: false, changed };
 }
-
-const REJECTION_KEYWORD_PATTERN = /(\brejected\b|安全閘門|拒絕修改|受保護|核心模組|核心功能|白名單|PROTECTED_CORE)/i;
 
 function extractUpgradeFailureDetails(jobsRaw: unknown): {
   failedSteps: string[];
@@ -679,25 +1229,38 @@ function extractUpgradeFailureDetails(jobsRaw: unknown): {
     const job = jobItem as Record<string, unknown>;
     const jobName = asTrimmedString(job.name) || 'Job';
 
-    const steps = Array.isArray(job.failed_steps) ? job.failed_steps : [];
-    for (const stItem of steps) {
+    const rawFailedSteps = Array.isArray(job.failed_steps) ? job.failed_steps : [];
+    const fallbackSteps = Array.isArray(job.steps) ? job.steps : [];
+    const stepCandidates = rawFailedSteps.length > 0 ? rawFailedSteps : fallbackSteps;
+
+    for (const stItem of stepCandidates) {
       if (!stItem || typeof stItem !== 'object') continue;
       const st = stItem as Record<string, unknown>;
+      const stConcl = asTrimmedString(st.conclusion).toLowerCase();
+      if (
+        rawFailedSteps.length === 0 &&
+        stConcl !== 'failure' &&
+        stConcl !== 'cancelled' &&
+        stConcl !== 'canceled' &&
+        stConcl !== 'timed_out' &&
+        stConcl !== 'action_required'
+      ) {
+        continue;
+      }
       const stName = asTrimmedString(st.name) || '步驟';
-      const stConcl = asTrimmedString(st.conclusion) || 'failure';
-      const stepLabel = `${jobName} > ${stName} (${stConcl})`;
+      const stepLabel = `${jobName} > ${stName} (${stConcl || 'failure'})`;
       if (!failedSteps.includes(stepLabel)) {
         failedSteps.push(stepLabel);
       }
     }
 
     const annotations = Array.isArray(job.annotations) ? job.annotations : [];
-    for (const annItem of annotations.slice(0, 6)) {
+    for (const annItem of annotations.slice(0, 8)) {
       if (!annItem || typeof annItem !== 'object') continue;
       const ann = annItem as Record<string, unknown>;
       const msg = asTrimmedString(ann.message);
-      if (!msg) continue;
-      const level = asTrimmedString(ann.level);
+      if (!msg || isIgnorableLogAccessWarning(msg)) continue;
+      const level = asTrimmedString(ann.level ?? ann.annotation_level);
       const annTitle = asTrimmedString(ann.title);
       const filePath = asTrimmedString(ann.path);
       const lineNum = typeof ann.start_line === 'number' ? `:${ann.start_line}` : '';
@@ -705,7 +1268,7 @@ function extractUpgradeFailureDetails(jobsRaw: unknown): {
       const head = level ? `[${level}] ` : '';
       const titlePart = annTitle ? `${annTitle}: ` : '';
       const formatted = `${head}${loc}${titlePart}${msg}`.trim();
-      if (!annotationsSummary.includes(formatted)) {
+      if (!isIgnorableLogAccessWarning(formatted) && !annotationsSummary.includes(formatted)) {
         annotationsSummary.push(formatted);
       }
     }
@@ -713,25 +1276,36 @@ function extractUpgradeFailureDetails(jobsRaw: unknown): {
     const errorLines = Array.isArray(job.error_lines) ? job.error_lines : [];
     for (const line of errorLines.slice(0, 6)) {
       const trimmed = asTrimmedString(line);
-      if (trimmed && !errorReasons.includes(trimmed)) {
+      if (trimmed && !isIgnorableLogAccessWarning(trimmed) && !errorReasons.includes(trimmed)) {
         errorReasons.push(trimmed);
       }
     }
 
     if (errorReasons.length === 0) {
       const logTail = asTrimmedString(job.log_tail);
-      if (logTail) {
-        const tailLines = logTail.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+      if (logTail && !isIgnorableLogAccessWarning(logTail)) {
+        const tailLines = logTail
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0 && !isIgnorableLogAccessWarning(l));
         for (const tl of tailLines.slice(-3)) {
           if (!errorReasons.includes(tl)) {
             errorReasons.push(tl);
           }
         }
-      } else {
-        const note = asTrimmedString(job.log_access_note);
-        if (note && !errorReasons.includes(note)) {
-          errorReasons.push(note);
-        }
+      }
+    }
+  }
+
+  for (const ann of annotationsSummary) {
+    if (!isIgnorableLogAccessWarning(ann) && !errorReasons.includes(ann)) {
+      errorReasons.push(ann);
+    }
+  }
+  if (errorReasons.length === 0) {
+    for (const st of failedSteps) {
+      if (!errorReasons.includes(st)) {
+        errorReasons.push(st);
       }
     }
   }
@@ -749,181 +1323,55 @@ function extractUpgradeFailureDetails(jobsRaw: unknown): {
   };
 }
 
-async function checkTrackedUpgradeProgress(
-  store: ProactiveUserStore,
-  args: Record<string, unknown>,
-  ctx: { userId: string },
-  nowIso: string,
-  nowMs: number
-): Promise<{ notification: DueNotificationItem | null; changed: boolean }> {
-  const track = store.upgradeTracking;
-  if (!track.tracking || track.reported) {
-    return { notification: null, changed: false };
-  }
+function buildUpgradeNotificationItem(params: {
+  verdict: string;
+  isSuccess: boolean;
+  isRejected: boolean;
+  runId: string;
+  runNumberLabel: string;
+  runStatus: string;
+  runConclusion: string;
+  actionsUrl: string;
+  prUrl: string;
+  summaryLabel: string;
+  failedSteps: string[];
+  annotationsSummary: string[];
+  errorReasons: string[];
+  nowIso: string;
+  nowMs: number;
+}): DueNotificationItem {
+  const {
+    verdict,
+    isSuccess,
+    isRejected,
+    runId,
+    runNumberLabel,
+    runStatus,
+    runConclusion,
+    actionsUrl,
+    prUrl,
+    summaryLabel,
+    failedSteps,
+    annotationsSummary,
+    errorReasons,
+    nowIso,
+    nowMs,
+  } = params;
 
-  const explicitStatus = asTrimmedString(args.upgrade_status ?? args.status).toLowerCase();
-  const explicitError = asTrimmedString(args.upgrade_error ?? args.error) || track.lastKnownError;
-  if (explicitStatus === 'rejected' || explicitStatus === 'failed' || explicitStatus === 'cancelled' || explicitStatus === 'timed_out') {
-    track.lastKnownStatus = explicitStatus;
-  }
-  if (explicitError) {
-    track.lastKnownError = explicitError;
-  }
+  const cleanReasons = errorReasons.filter((r) => !isIgnorableLogAccessWarning(r));
+  const cleanAnnotations = annotationsSummary.filter((a) => !isIgnorableLogAccessWarning(a));
+  const runTag = runNumberLabel ? `（GitHub Actions ${runNumberLabel}）` : '';
 
-  const isExplicitRejected = track.lastKnownStatus.toLowerCase() === 'rejected';
-  const isExplicitFailed =
-    track.lastKnownStatus.toLowerCase() === 'failed' ||
-    track.lastKnownStatus.toLowerCase() === 'cancelled' ||
-    track.lastKnownStatus.toLowerCase() === 'timed_out';
-
-  const repo = track.repo || asTrimmedString(args.repo) || parseGitHubActionsUrl(track.actionsUrl).repo || extractDefaultRepo(ctx);
-  let ghRes: Record<string, unknown> | null = null;
-
-  if (repo) {
-    const githubToken = extractGitHubToken(ctx, args);
-    const ghArgs: Record<string, unknown> = {
-      repo,
-      workflow_file: track.workflowFile || DEFAULT_WORKFLOW_FILE,
-    };
-    if (track.actionsUrl) ghArgs.actions_url = track.actionsUrl;
-    if (track.runId) ghArgs.run_id = track.runId;
-    if (githubToken) ghArgs.github_token = githubToken;
-    ghRes = await githubActionsUpgradeStatusPlugin.execute(ghArgs, ctx);
-    track.lastCheckedAt = nowIso;
-  }
-
-  if (!ghRes || ghRes.ok !== true || !ghRes.run || typeof ghRes.run !== 'object') {
-    if (!isExplicitRejected && !isExplicitFailed) {
-      return { notification: null, changed: Boolean(repo) };
-    }
-
-    const fallbackVerdict = isExplicitRejected ? 'rejected' : (track.lastKnownStatus.toLowerCase() || 'failure');
-    const reportKey = `${track.runId || track.startedAt || 'latest'}:${fallbackVerdict}`;
-    if (track.reportedRunKeys.includes(reportKey)) {
-      track.tracking = false;
-      track.reported = true;
-      return { notification: null, changed: true };
-    }
-
-    const summaryLabel = track.summary || '自我升級任務';
-    const title = isExplicitRejected ? '🚫 自我升級被拒絕通知' : '❌ 自我升級失敗通知';
-    const parts: string[] = [
-      isExplicitRejected
-        ? `主人注意：我的自我升級「${summaryLabel}」已被安全閘門拒絕（rejected）。`
-        : `主人注意：我的自我升級「${summaryLabel}」執行失敗（狀態：${fallbackVerdict}）。`,
-    ];
-    const reasons = explicitError ? [explicitError] : [];
-    if (reasons.length > 0) parts.push(`失敗/拒絕原因：${reasons.join(' | ')}`);
-    if (track.actionsUrl) parts.push(`Actions 連結：${track.actionsUrl}`);
-    const message = parts.join('\n');
-
-    track.tracking = false;
-    track.reported = true;
-    track.lastKnownStatus = fallbackVerdict;
-    track.lastKnownConclusion = fallbackVerdict;
-    track.reportedAt = nowIso;
-    track.reportedRunKeys.push(reportKey);
-
-    return {
-      notification: {
-        id: `upgrade-${track.runId || nowMs}`,
-        title,
-        message,
-        scheduleType: 'interval',
-        time: '00:00',
-        intervalMinutes: 1,
-        enabled: true,
-        aiGenerated: false,
-        createdAt: nowIso,
-        lastTriggeredAt: nowIso,
-        originalMessage: message,
-        aiGeneratedSuccess: false,
-        upgradeReport: {
-          verdict: fallbackVerdict,
-          runId: track.runId,
-          status: fallbackVerdict,
-          conclusion: fallbackVerdict,
-          actionsUrl: track.actionsUrl,
-          prUrl: track.prUrl,
-          failedSteps: [],
-          annotationsSummary: [],
-          errorReasons: reasons,
-        },
-      },
-      changed: true,
-    };
-  }
-
-  const run = ghRes.run as Record<string, unknown>;
-  const runId = String(run.id ?? '');
-  const runStatus = asTrimmedString(run.status).toLowerCase() || 'unknown';
-  const runConclusion = asTrimmedString(run.conclusion).toLowerCase() || '';
-  const runHtmlUrl = asTrimmedString(run.html_url) || track.actionsUrl;
-  const runNumber = typeof run.run_number === 'number' ? `#${run.run_number}` : `#${runId}`;
-  const displayTitle = asTrimmedString(run.display_title) || asTrimmedString(run.name) || '自我升級任務';
-
-  if (!track.runId && track.startedAt && runStatus === 'completed') {
-    const startedMs = Date.parse(track.startedAt);
-    const runTimeMs = Date.parse(asTrimmedString(run.updated_at) || asTrimmedString(run.created_at));
-    if (Number.isFinite(startedMs) && Number.isFinite(runTimeMs) && runTimeMs < startedMs - 120000) {
-      return { notification: null, changed: true };
-    }
-  }
-
-  if (runId) track.runId = runId;
-  if (runHtmlUrl) track.actionsUrl = runHtmlUrl;
-
-  const wasInProgress = isInProgressStatus(track.lastKnownStatus);
-  if (runStatus !== 'completed' && !isExplicitRejected && !isExplicitFailed) {
-    track.lastKnownStatus = runStatus || 'in_progress';
-    track.lastKnownConclusion = runConclusion || null;
-    return { notification: null, changed: true };
-  }
-
-  const isStrictActionsSuccess = runStatus === 'completed' && runConclusion === 'success';
-  const extracted = isStrictActionsSuccess && !isExplicitRejected && !isExplicitFailed
-    ? { failedSteps: [], annotationsSummary: [], errorReasons: [], isRejected: false }
-    : extractUpgradeFailureDetails(ghRes.jobs);
-
-  const isRejected = isExplicitRejected || (!isStrictActionsSuccess && extracted.isRejected);
-  const isSuccess = isStrictActionsSuccess && !isExplicitRejected && !isExplicitFailed;
-  const verdict = isSuccess
-    ? 'success'
-    : isRejected
-      ? 'rejected'
-      : runConclusion === 'cancelled' || track.lastKnownStatus.toLowerCase() === 'cancelled'
-        ? 'cancelled'
-        : runConclusion === 'timed_out' || track.lastKnownStatus.toLowerCase() === 'timed_out'
-          ? 'timed_out'
-          : runConclusion || 'failure';
-
-  const reportKey = `${runId}:${verdict}`;
-  if (track.reportedRunKeys.includes(reportKey)) {
-    track.tracking = false;
-    track.reported = true;
-    return { notification: null, changed: true };
-  }
-
-  if (!wasInProgress && !track.startedAt && !isExplicitRejected && !isExplicitFailed) {
-    return { notification: null, changed: true };
-  }
-
-  const errorReasons = [...extracted.errorReasons];
-  if (explicitError && !errorReasons.includes(explicitError)) {
-    errorReasons.unshift(explicitError);
-  }
-
-  const summaryLabel = track.summary || displayTitle;
   let title = '';
   let message = '';
 
   if (isSuccess) {
     title = '🎉 自我升級完成通知';
     const parts: string[] = [
-      `主人好消息！我的自我升級「${summaryLabel}」（GitHub Actions ${runNumber}）已經順利完成囉！✨`,
+      `主人好消息！我的自我升級「${summaryLabel}」${runTag}已經順利完成囉！✨`,
     ];
-    if (track.prUrl) parts.push(`PR 變更連結：${track.prUrl}`);
-    if (runHtmlUrl) parts.push(`Actions 執行紀錄：${runHtmlUrl}`);
+    if (prUrl) parts.push(`PR 變更連結：${prUrl}`);
+    if (actionsUrl) parts.push(`Actions 執行紀錄：${actionsUrl}`);
     message = parts.join('\n');
   } else {
     if (isRejected) {
@@ -935,34 +1383,30 @@ async function checkTrackedUpgradeProgress(
     } else {
       title = '❌ 自我升級失敗通知';
     }
-    const parts: string[] = [
-      isRejected
-        ? `主人注意：我的自我升級「${summaryLabel}」（GitHub Actions ${runNumber}）已被安全閘門拒絕（rejected）。`
-        : `主人注意：我的自我升級「${summaryLabel}」（GitHub Actions ${runNumber}）未能成功（狀態：${runStatus} / 結論：${verdict}）。`,
-    ];
-    if (extracted.failedSteps.length > 0) {
-      parts.push(`失敗步驟：${extracted.failedSteps.join('；')}`);
+
+    const headerLine = isRejected
+      ? `主人注意：我的自我升級「${summaryLabel}」${runTag}已被安全閘門拒絕（rejected）。`
+      : verdict === 'cancelled'
+        ? `主人注意：我的自我升級「${summaryLabel}」${runTag}已取消／未能完成（狀態：${runStatus} / 結論：cancelled）。`
+        : `主人注意：我的自我升級「${summaryLabel}」${runTag}未能成功（狀態：${runStatus} / 結論：${verdict}）。`;
+
+    const parts: string[] = [headerLine];
+    if (failedSteps.length > 0) {
+      parts.push(`失敗步驟：${failedSteps.join('；')}`);
     }
-    if (extracted.annotationsSummary.length > 0) {
-      parts.push(`Annotations 摘要：${extracted.annotationsSummary.slice(0, 3).join(' | ')}`);
+    if (cleanAnnotations.length > 0) {
+      parts.push(`Annotations 摘要：${cleanAnnotations.slice(0, 3).join(' | ')}`);
     }
-    if (errorReasons.length > 0) {
-      parts.push(`失敗/拒絕原因：${errorReasons.slice(0, 3).join(' | ')}`);
+    if (cleanReasons.length > 0) {
+      parts.push(`失敗/拒絕原因：${cleanReasons.slice(0, 3).join(' | ')}`);
     }
-    if (runHtmlUrl) {
-      parts.push(`Actions 連結：${runHtmlUrl}`);
+    if (actionsUrl) {
+      parts.push(`Actions 連結：${actionsUrl}`);
     }
     message = parts.join('\n');
   }
 
-  track.tracking = false;
-  track.reported = true;
-  track.lastKnownStatus = isSuccess ? 'completed' : verdict;
-  track.lastKnownConclusion = runConclusion || verdict;
-  track.reportedAt = nowIso;
-  track.reportedRunKeys.push(reportKey);
-
-  const notification: DueNotificationItem = {
+  return {
     id: `upgrade-${runId || nowMs}`,
     title,
     message,
@@ -980,13 +1424,323 @@ async function checkTrackedUpgradeProgress(
       runId,
       status: runStatus,
       conclusion: runConclusion || verdict,
-      actionsUrl: runHtmlUrl,
-      prUrl: track.prUrl,
-      failedSteps: extracted.failedSteps,
-      annotationsSummary: extracted.annotationsSummary,
-      errorReasons: errorReasons.slice(0, 6),
+      actionsUrl,
+      prUrl,
+      failedSteps,
+      annotationsSummary: cleanAnnotations,
+      errorReasons: cleanReasons.slice(0, 6),
     },
   };
+}
+
+async function checkTrackedUpgradeProgress(
+  store: ProactiveUserStore,
+  kvLatest: KvLatestUpgradeSnapshot | null,
+  args: Record<string, unknown>,
+  ctx: { userId: string },
+  nowIso: string,
+  nowMs: number
+): Promise<{ notification: DueNotificationItem | null; changed: boolean }> {
+  const syncRes = syncTrackingFromKvAndArgs(store, kvLatest, args, ctx, nowIso, false);
+  const track = store.upgradeTracking;
+  let changed = syncRes.changed;
+
+  if (!track.tracking || track.reported) {
+    return { notification: null, changed };
+  }
+
+  const kvAnalysis = analyzeKvLatestUpgrade(kvLatest);
+  const explicitStatus = asTrimmedString(args.upgrade_status ?? args.status).toLowerCase();
+  const explicitErrorRaw = asTrimmedString(args.upgrade_error ?? args.error) || track.lastKnownError;
+  const cleanExplicitError = isIgnorableLogAccessWarning(explicitErrorRaw) ? '' : explicitErrorRaw;
+
+  const isExplicitRejected =
+    explicitStatus === 'rejected' ||
+    track.lastKnownStatus.toLowerCase() === 'rejected' ||
+    REJECTION_KEYWORD_PATTERN.test(cleanExplicitError);
+  const isExplicitCancelled =
+    explicitStatus === 'cancelled' ||
+    explicitStatus === 'canceled' ||
+    track.lastKnownStatus.toLowerCase() === 'cancelled' ||
+    track.lastKnownStatus.toLowerCase() === 'canceled';
+  const isExplicitTimedOut =
+    explicitStatus === 'timed_out' || track.lastKnownStatus.toLowerCase() === 'timed_out';
+  const isExplicitFailed =
+    isExplicitRejected ||
+    isExplicitCancelled ||
+    isExplicitTimedOut ||
+    explicitStatus === 'failed' ||
+    explicitStatus === 'error' ||
+    track.lastKnownStatus.toLowerCase() === 'failed' ||
+    track.lastKnownStatus.toLowerCase() === 'error';
+
+  const combinedKvFailed = kvAnalysis.isFailedOrCancelled || isExplicitFailed;
+  const combinedKvRejected = kvAnalysis.isRejected || isExplicitRejected;
+  const combinedKvCancelled = kvAnalysis.isCancelled || isExplicitCancelled;
+  const combinedKvTimedOut = kvAnalysis.isTimedOut || isExplicitTimedOut;
+  const combinedKvReasons: string[] = [...kvAnalysis.reasons];
+  if (cleanExplicitError && !combinedKvReasons.includes(cleanExplicitError)) {
+    combinedKvReasons.unshift(cleanExplicitError);
+  }
+
+  const repo =
+    track.repo ||
+    asTrimmedString(args.repo) ||
+    parseGitHubActionsUrl(track.actionsUrl).repo ||
+    extractDefaultRepo(ctx);
+
+  let ghRes: Record<string, unknown> | null = null;
+  if (repo) {
+    const githubToken = extractGitHubToken(ctx, args);
+    const ghArgs: Record<string, unknown> = {
+      repo,
+      workflow_file: track.workflowFile || DEFAULT_WORKFLOW_FILE,
+    };
+    if (track.actionsUrl) ghArgs.actions_url = track.actionsUrl;
+    if (track.runId) ghArgs.run_id = track.runId;
+    if (githubToken) ghArgs.github_token = githubToken;
+    ghRes = await githubActionsUpgradeStatusPlugin.execute(ghArgs, ctx);
+    track.lastCheckedAt = nowIso;
+    changed = true;
+  }
+
+  // 驗證 GitHub Actions API 回傳是否成功，且是否對應本次任務而非舊歷史 run
+  let matchedRun: Record<string, unknown> | null = null;
+  const ghApiSucceeded = Boolean(ghRes && ghRes.ok === true && ghRes.run && typeof ghRes.run === 'object');
+
+  if (ghApiSucceeded && ghRes) {
+    const candidateRun = ghRes.run as Record<string, unknown>;
+    const candidateRunId = String(candidateRun.id ?? '');
+    const hadBoundRunId = track.runId !== '';
+
+    if (hadBoundRunId && candidateRunId === track.runId) {
+      matchedRun = candidateRun;
+    } else if (!hadBoundRunId && candidateRunId) {
+      const alreadyReportedThisId = hasRunKeyBeenReported(track.reportedRunKeys, candidateRunId);
+      const refStartStr = kvLatest?.startedAt || track.startedAt || '';
+      const refStartMs = refStartStr ? Date.parse(refStartStr) : Number.NaN;
+      const runUpdatedStr = asTrimmedString(candidateRun.updated_at) || asTrimmedString(candidateRun.created_at);
+      const runCreatedStr = asTrimmedString(candidateRun.created_at) || runUpdatedStr;
+      const runUpdatedMs = runUpdatedStr ? Date.parse(runUpdatedStr) : Number.NaN;
+      const runCreatedMs = runCreatedStr ? Date.parse(runCreatedStr) : Number.NaN;
+
+      const isStaleHistoricalRun =
+        alreadyReportedThisId ||
+        (Number.isFinite(refStartMs) &&
+          ((Number.isFinite(runUpdatedMs) && runUpdatedMs < refStartMs - 60000) ||
+            (Number.isFinite(runCreatedMs) &&
+              asTrimmedString(candidateRun.status).toLowerCase() === 'completed' &&
+              runCreatedMs < refStartMs - 60000)));
+
+      if (!isStaleHistoricalRun) {
+        matchedRun = candidateRun;
+        track.runId = candidateRunId;
+        const htmlUrl = asTrimmedString(candidateRun.html_url);
+        if (htmlUrl) track.actionsUrl = htmlUrl;
+      }
+    } else if (candidateRunId) {
+      matchedRun = candidateRun;
+    }
+  }
+
+  // 降級容錯分支：當 GitHub Actions API 查詢失敗 (ok: false 或 HTTP 403 rate limit) 或尚未抓到對應新 run 時
+  // 絕對不可誤報升級失敗，僅依據 KV latest_upgrade 判斷；若 KV 仍為 running 則維持進行中等待下次 check_due
+  if (!matchedRun) {
+    if (combinedKvFailed) {
+      const fallbackVerdict = combinedKvRejected
+        ? 'rejected'
+        : combinedKvCancelled
+          ? 'cancelled'
+          : combinedKvTimedOut
+            ? 'timed_out'
+            : 'failure';
+      const keyBase = track.runId || track.startedAt || 'latest';
+      const reportKey = `${keyBase}:${fallbackVerdict}`;
+      if (track.reportedRunKeys.includes(reportKey) || (track.runId && hasRunKeyBeenReported(track.reportedRunKeys, track.runId))) {
+        track.tracking = false;
+        track.reported = true;
+        return { notification: null, changed: true };
+      }
+
+      const summaryLabel = track.summary || kvLatest?.summary || kvLatest?.request || '自我升級任務';
+      const runNumberLabel = track.runId ? `#${track.runId}` : '';
+
+      track.tracking = false;
+      track.reported = true;
+      track.lastKnownStatus = fallbackVerdict;
+      track.lastKnownConclusion = fallbackVerdict;
+      track.reportedAt = nowIso;
+      track.reportedRunKeys.push(reportKey);
+
+      return {
+        notification: buildUpgradeNotificationItem({
+          verdict: fallbackVerdict,
+          isSuccess: false,
+          isRejected: combinedKvRejected,
+          runId: track.runId,
+          runNumberLabel,
+          runStatus: kvAnalysis.statusLower || fallbackVerdict,
+          runConclusion: fallbackVerdict,
+          actionsUrl: track.actionsUrl,
+          prUrl: track.prUrl,
+          summaryLabel,
+          failedSteps: [],
+          annotationsSummary: [],
+          errorReasons: combinedKvReasons,
+          nowIso,
+          nowMs,
+        }),
+        changed: true,
+      };
+    }
+
+    if (kvAnalysis.isMergedSuccess) {
+      const keyBase = track.runId || track.startedAt || 'latest';
+      const reportKey = `${keyBase}:success`;
+      if (track.reportedRunKeys.includes(reportKey) || (track.runId && hasRunKeyBeenReported(track.reportedRunKeys, track.runId))) {
+        track.tracking = false;
+        track.reported = true;
+        return { notification: null, changed: true };
+      }
+
+      const summaryLabel = track.summary || kvLatest?.summary || kvLatest?.request || '自我升級任務';
+      const runNumberLabel = track.runId ? `#${track.runId}` : '';
+
+      track.tracking = false;
+      track.reported = true;
+      track.lastKnownStatus = 'completed';
+      track.lastKnownConclusion = 'success';
+      track.reportedAt = nowIso;
+      track.reportedRunKeys.push(reportKey);
+
+      return {
+        notification: buildUpgradeNotificationItem({
+          verdict: 'success',
+          isSuccess: true,
+          isRejected: false,
+          runId: track.runId,
+          runNumberLabel,
+          runStatus: 'merged',
+          runConclusion: 'success',
+          actionsUrl: track.actionsUrl,
+          prUrl: track.prUrl,
+          summaryLabel,
+          failedSteps: [],
+          annotationsSummary: [],
+          errorReasons: [],
+          nowIso,
+          nowMs,
+        }),
+        changed: true,
+      };
+    }
+
+    // KV 仍為 running 或尚無結束狀態：維持進行中，等待下次 check_due
+    return { notification: null, changed };
+  }
+
+  // 雙源交叉校準分支：已取得對應本次任務的 GitHub Actions Run
+  const runId = String(matchedRun.id ?? track.runId ?? '');
+  const runStatus = asTrimmedString(matchedRun.status).toLowerCase() || 'unknown';
+  const runConclusion = asTrimmedString(matchedRun.conclusion).toLowerCase() || '';
+  const runHtmlUrl = asTrimmedString(matchedRun.html_url) || track.actionsUrl;
+  const runNumberLabel =
+    typeof matchedRun.run_number === 'number'
+      ? `#${matchedRun.run_number}`
+      : runId
+        ? `#${runId}`
+        : '';
+  const displayTitle =
+    asTrimmedString(matchedRun.display_title) || asTrimmedString(matchedRun.name) || '自我升級任務';
+
+  if (runId) track.runId = runId;
+  if (runHtmlUrl) track.actionsUrl = runHtmlUrl;
+
+  const isActionsCompleted = runStatus === 'completed';
+  const isActionsFailedOrCancelled =
+    isActionsCompleted && (ACTIONS_FAILURE_CONCLUSIONS.has(runConclusion) || runConclusion !== 'success');
+  const isActionsSuccess = isActionsCompleted && runConclusion === 'success';
+
+  // 若 Actions 尚未 completed，且 KV 也未出現失敗/拒絕/取消或明確 merged，則維持進行中
+  if (!isActionsCompleted && !combinedKvFailed && !kvAnalysis.isMergedSuccess) {
+    track.lastKnownStatus = runStatus || 'in_progress';
+    track.lastKnownConclusion = runConclusion || null;
+    return { notification: null, changed: true };
+  }
+
+  const extracted =
+    isActionsSuccess && !combinedKvFailed
+      ? { failedSteps: [], annotationsSummary: [], errorReasons: [], isRejected: false }
+      : extractUpgradeFailureDetails(ghRes?.jobs);
+
+  const isRejected = combinedKvRejected || (isActionsFailedOrCancelled && extracted.isRejected);
+  const isSuccess =
+    !combinedKvFailed &&
+    !isRejected &&
+    !isActionsFailedOrCancelled &&
+    (isActionsSuccess || kvAnalysis.isMergedSuccess);
+
+  let verdict: string;
+  if (isSuccess) {
+    verdict = 'success';
+  } else if (isRejected) {
+    verdict = 'rejected';
+  } else if (
+    runConclusion === 'cancelled' ||
+    runConclusion === 'canceled' ||
+    combinedKvCancelled
+  ) {
+    verdict = 'cancelled';
+  } else if (runConclusion === 'timed_out' || combinedKvTimedOut) {
+    verdict = 'timed_out';
+  } else if (runConclusion === 'action_required') {
+    verdict = 'action_required';
+  } else {
+    verdict = runConclusion || 'failure';
+  }
+
+  const keyBase = runId || track.startedAt || 'latest';
+  const reportKey = `${keyBase}:${verdict}`;
+  if (track.reportedRunKeys.includes(reportKey) || (runId && hasRunKeyBeenReported(track.reportedRunKeys, runId))) {
+    track.tracking = false;
+    track.reported = true;
+    return { notification: null, changed: true };
+  }
+
+  const mergedErrorReasons: string[] = [];
+  for (const r of [...combinedKvReasons, ...extracted.errorReasons]) {
+    const trimmed = r.trim();
+    if (trimmed && !isIgnorableLogAccessWarning(trimmed) && !mergedErrorReasons.includes(trimmed)) {
+      mergedErrorReasons.push(trimmed);
+    }
+  }
+
+  const summaryLabel = track.summary || kvLatest?.summary || kvLatest?.request || displayTitle;
+
+  track.tracking = false;
+  track.reported = true;
+  track.lastKnownStatus = isSuccess ? 'completed' : verdict;
+  track.lastKnownConclusion = runConclusion || verdict;
+  track.reportedAt = nowIso;
+  track.reportedRunKeys.push(reportKey);
+
+  const notification = buildUpgradeNotificationItem({
+    verdict,
+    isSuccess,
+    isRejected,
+    runId,
+    runNumberLabel,
+    runStatus,
+    runConclusion: runConclusion || verdict,
+    actionsUrl: runHtmlUrl,
+    prUrl: track.prUrl,
+    summaryLabel,
+    failedSteps: extracted.failedSteps,
+    annotationsSummary: extracted.annotationsSummary,
+    errorReasons: mergedErrorReasons,
+    nowIso,
+    nowMs,
+  });
 
   return { notification, changed: true };
 }
@@ -995,7 +1749,7 @@ export const proactiveMessagesPlugin: PluginTool = {
   declaration: {
     name: 'manage_proactive_messages',
     description:
-      '管理桌寵的主動訊息、定時提醒、閒置關懷排程，以及自我升級（GitHub Actions self-upgrade-runner.yml）的完成/失敗主動回報追蹤。支援新增排程(add)、列出所有排程與升級追蹤狀態(list)、啟用或停用排程/總開關(toggle)、切換 AI 隨機生成(toggle_ai)、刪除排程(delete)、登記追蹤自我升級任務(track_upgrade，建議在呼叫 request_self_upgrade 後立即呼叫以登記追蹤)、以及檢查到期主動訊息與升級結果(check_due，會自動查詢 GitHub Actions 狀態並在狀態由進行中變為 completed 時回報成功摘要或失敗步驟與原因，並標記已回報避免重複通知)。',
+      '管理桌寵的主動訊息、定時提醒、閒置關懷排程，以及自我升級（KV latest_upgrade 與 GitHub Actions self-upgrade-runner.yml 雙源交叉校準）的完成/失敗/取消主動回報追蹤。支援新增排程(add)、列出所有排程與升級追蹤狀態(list)、啟用或停用排程/總開關(toggle)、切換 AI 隨機生成(toggle_ai)、刪除排程(delete)、登記追蹤自我升級任務(track_upgrade，會自動從 latest_upgrade.actions_url 解析並綁定具體 run_id 與 started_at)、以及檢查到期主動訊息與升級結果(check_due，雙源交叉校準 KV latest_upgrade 與 GitHub Actions Run/Job API，遇到 403/rate limit 自動降級容錯，並以 reportedRunKeys 防止重複通知)。',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -1053,7 +1807,7 @@ export const proactiveMessagesPlugin: PluginTool = {
         },
         repo: {
           type: 'STRING',
-          description: 'GitHub 倉庫 owner/repo（用於 track_upgrade 或 check_due）。',
+          description: 'GitHub 倉庫 owner/repo（用於 track_upgrade 或 check_due，預設為 ZeroAker/gemini-pet-bff）。',
         },
         workflow_file: {
           type: 'STRING',
@@ -1073,11 +1827,27 @@ export const proactiveMessagesPlugin: PluginTool = {
         },
         upgrade_status: {
           type: 'STRING',
-          description: '選填，已知的自我升級狀態（如 running、rejected、failed、cancelled、timed_out）。',
+          description: '選填，已知的自我升級狀態（如 running、merged、rejected、failed、cancelled、timed_out）。',
+        },
+        upgrade_step: {
+          type: 'STRING',
+          description: '選填，KV latest_upgrade.step 階段（如 initializing、merged、rejected、failed）。',
+        },
+        upgrade_logs: {
+          type: 'STRING',
+          description: '選填，KV latest_upgrade.logs 日誌內容（JSON 字串或換行分隔文字）。',
         },
         upgrade_error: {
           type: 'STRING',
           description: '選填，已知的自我升級錯誤或拒絕原因說明。',
+        },
+        started_at: {
+          type: 'STRING',
+          description: '選填，自我升級任務啟動時間（ISO 格式字串）。',
+        },
+        latest_upgrade: {
+          type: 'STRING',
+          description: '選填，從 check_upgrade_status 取得的 latest_upgrade JSON 字串或物件，用於雙源交叉校準。',
         },
         github_token: {
           type: 'STRING',
@@ -1108,6 +1878,13 @@ export const proactiveMessagesPlugin: PluginTool = {
     }
 
     if (action === 'list') {
+      const kvLatest = await loadKvLatestUpgrade(userId, args, ctx);
+      if (kvLatest) {
+        const syncRes = syncTrackingFromKvAndArgs(store, kvLatest, args, ctx, new Date().toISOString(), false);
+        if (syncRes.changed) {
+          await saveUserStore(store, ctx);
+        }
+      }
       return {
         ok: true,
         action: 'list',
@@ -1123,7 +1900,8 @@ export const proactiveMessagesPlugin: PluginTool = {
 
     if (action === 'track_upgrade') {
       const nowIso = new Date().toISOString();
-      const regResult = registerUpgradeTracking(store, args, ctx, nowIso);
+      const kvLatest = await loadKvLatestUpgrade(userId, args, ctx);
+      const regResult = syncTrackingFromKvAndArgs(store, kvLatest, args, ctx, nowIso, true);
       store.lastInteractionAt = nowIso;
       await saveUserStore(store, ctx);
       return {
@@ -1379,19 +2157,22 @@ export const proactiveMessagesPlugin: PluginTool = {
     }
 
     let storeMutated = false;
+    const kvLatest = await loadKvLatestUpgrade(userId, args, ctx);
     const hasUpgradeParams =
       asTrimmedString(args.actions_url) !== '' ||
       asTrimmedString(args.repo) !== '' ||
-      asTrimmedString(args.run_id) !== '';
+      asTrimmedString(args.run_id) !== '' ||
+      asTrimmedString(args.upgrade_status ?? args.status) !== '' ||
+      args.latest_upgrade !== undefined;
 
     if (hasUpgradeParams && !store.upgradeTracking.tracking) {
-      const reg = registerUpgradeTracking(store, args, ctx, nowIso);
-      if (reg.registered) {
+      const reg = syncTrackingFromKvAndArgs(store, kvLatest, args, ctx, nowIso, true);
+      if (reg.changed || reg.registered) {
         storeMutated = true;
       }
     }
 
-    const upgradeCheck = await checkTrackedUpgradeProgress(store, args, ctx, nowIso, nowMs);
+    const upgradeCheck = await checkTrackedUpgradeProgress(store, kvLatest, args, ctx, nowIso, nowMs);
     if (upgradeCheck.changed) {
       storeMutated = true;
     }

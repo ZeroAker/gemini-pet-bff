@@ -332,10 +332,16 @@ export const UI_SCRIPT: string = `
 
     function getValidGhForState(st, ghInfo) {
       if (!ghInfo || !ghInfo.status) return null;
+      if (st && st.actions_url) {
+        var parsedSt = parseGitHubRunTarget(st.actions_url);
+        if (parsedSt.runId && ghInfo.id && String(ghInfo.id) === String(parsedSt.runId)) {
+          return ghInfo;
+        }
+      }
       if (st && st.started_at && ghInfo.status === 'completed' && ghInfo.updatedAt) {
         var stStartMs = Date.parse(st.started_at);
         var ghUpdMs = Date.parse(ghInfo.updatedAt);
-        if (!isNaN(stStartMs) && !isNaN(ghUpdMs) && ghUpdMs < stStartMs - 120000) {
+        if (!isNaN(stStartMs) && !isNaN(ghUpdMs) && ghUpdMs < stStartMs - 60000) {
           return null;
         }
       }
@@ -347,37 +353,53 @@ export const UI_SCRIPT: string = `
         return { verdict: 'idle', isSuccess: false, isError: false, isRejected: false, isActive: false, conclusion: '' };
       }
       var s = String(st.status || '').toLowerCase();
+      var stepLower = String(st.step || '').toLowerCase();
       var stConclusion = String(st.conclusion || '').toLowerCase();
+      var logsArr = Array.isArray(st.logs) ? st.logs : [];
+      var joinedLogs = logsArr.join(' ');
       var validGh = getValidGhForState(st, ghInfo);
 
-      if (s === 'rejected' || (validGh && validGh.isRejected && validGh.status === 'completed' && validGh.conclusion !== 'success')) {
+      var rejectLogRe = /(rejected|reject_upgrade|安全閘門|拒絕修改|拒絕升級|受保護|核心模組|核心功能|白名單|不在可編輯|PROTECTED_CORE)/i;
+      var codeErrLogRe = /(error\s+TS\d+|型別檢查.*失敗|型別錯誤|語法錯誤|語法驗證.*失敗|SyntaxError|TypeError|沙盒驗證.*失敗|安全掃描.*失敗|編譯失敗)/i;
+      var mergedLogRe = /(升級已自動合併至\s*main|已自動合併至\s*main)/i;
+
+      var hasKvRejectSignal = s === 'rejected' || stepLower === 'rejected' || rejectLogRe.test(String(st.error || '')) || rejectLogRe.test(joinedLogs);
+      var hasKvCodeErrSignal = codeErrLogRe.test(String(st.error || '')) || codeErrLogRe.test(joinedLogs);
+      var hasKvMergedSignal = s === 'merged' || stepLower === 'merged' || mergedLogRe.test(joinedLogs);
+
+      if (hasKvRejectSignal || (validGh && validGh.isRejected && validGh.status === 'completed' && validGh.conclusion !== 'success')) {
         return { verdict: 'rejected', isSuccess: false, isError: true, isRejected: true, isActive: false, conclusion: (validGh && validGh.conclusion) || 'rejected' };
-      }
-      if (s === 'failed' || s === 'error') {
-        return { verdict: 'failure', isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: (validGh && validGh.conclusion) || 'failure' };
-      }
-      if (s === 'cancelled' || s === 'canceled') {
-        return { verdict: 'cancelled', isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: 'cancelled' };
-      }
-      if (s === 'timed_out' || st.is_stale) {
-        return { verdict: 'timed_out', isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: 'timed_out' };
       }
       if (validGh && validGh.status === 'completed' && validGh.conclusion !== 'success') {
         var ghConcl = validGh.conclusion || 'failure';
-        var ghVerdict = ghConcl === 'cancelled' ? 'cancelled' : (ghConcl === 'timed_out' ? 'timed_out' : 'failure');
+        var ghVerdict = (ghConcl === 'cancelled' || ghConcl === 'canceled')
+          ? 'cancelled'
+          : (ghConcl === 'timed_out' ? 'timed_out' : 'failure');
         return { verdict: ghVerdict, isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: ghConcl };
+      }
+      if (s === 'cancelled' || s === 'canceled' || stepLower === 'cancelled' || stepLower === 'canceled') {
+        return { verdict: 'cancelled', isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: 'cancelled' };
+      }
+      if (s === 'failed' || s === 'error' || stepLower === 'failed' || stepLower === 'error' || hasKvCodeErrSignal) {
+        return { verdict: 'failure', isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: (validGh && validGh.conclusion) || 'failure' };
       }
       if ((s === 'completed' || s === 'merged' || s === 'success') && stConclusion && stConclusion !== 'success') {
         var stVerdict = stConclusion === 'cancelled' ? 'cancelled' : (stConclusion === 'timed_out' ? 'timed_out' : 'failure');
         return { verdict: stVerdict, isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: stConclusion };
       }
-      if (s === 'merged' || s === 'success') {
-        if (!validGh || (validGh.status === 'completed' && validGh.conclusion === 'success')) {
+      if (validGh && validGh.status === 'completed' && validGh.conclusion === 'success') {
+        return { verdict: 'success', isSuccess: true, isError: false, isRejected: false, isActive: false, conclusion: 'success' };
+      }
+      if (hasKvMergedSignal && !st.error) {
+        if (!validGh || validGh.status !== 'completed' || validGh.conclusion === 'success') {
           return { verdict: 'success', isSuccess: true, isError: false, isRejected: false, isActive: false, conclusion: 'success' };
         }
       }
+      if (s === 'timed_out' || st.is_stale) {
+        return { verdict: 'timed_out', isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: 'timed_out' };
+      }
       if (s === 'completed') {
-        if (stConclusion === 'success' || (validGh && validGh.status === 'completed' && validGh.conclusion === 'success')) {
+        if (stConclusion === 'success') {
           return { verdict: 'success', isSuccess: true, isError: false, isRejected: false, isActive: false, conclusion: 'success' };
         }
         return { verdict: 'failure', isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: stConclusion || 'unknown' };
@@ -389,9 +411,6 @@ export const UI_SCRIPT: string = `
         return { verdict: 'queued', isSuccess: false, isError: false, isRejected: false, isActive: true, conclusion: '' };
       }
       if (s === 'running' || s === 'in_progress') {
-        if (validGh && validGh.status === 'completed' && validGh.conclusion === 'success') {
-          return { verdict: 'success', isSuccess: true, isError: false, isRejected: false, isActive: false, conclusion: 'success' };
-        }
         return { verdict: 'running', isSuccess: false, isError: false, isRejected: false, isActive: true, conclusion: '' };
       }
       return { verdict: 'failure', isSuccess: false, isError: true, isRejected: false, isActive: false, conclusion: s };
@@ -964,11 +983,11 @@ export const UI_SCRIPT: string = `
                 var job = jobs[ji];
                 var steps = Array.isArray(job.steps) ? job.steps : [];
                 steps.forEach(function (s) {
-                  if (s.conclusion === 'failure' || s.conclusion === 'cancelled' || s.conclusion === 'timed_out') {
+                  if (s.conclusion === 'failure' || s.conclusion === 'cancelled' || s.conclusion === 'timed_out' || s.conclusion === 'action_required') {
                     failedSteps.push((job.name || 'Job') + ' > ' + (s.name || '步驟') + ' (' + s.conclusion + ')');
                   }
                 });
-                if (job.id && ji < 3 && (job.conclusion === 'failure' || job.conclusion === 'cancelled' || job.conclusion === 'timed_out' || failedSteps.length > 0)) {
+                if (job.id && ji < 3 && (job.conclusion === 'failure' || job.conclusion === 'cancelled' || job.conclusion === 'timed_out' || job.conclusion === 'action_required' || failedSteps.length > 0)) {
                   try {
                     var aRes = await fetch('https://api.github.com/repos/' + parsed.repo + '/check-runs/' + job.id + '/annotations?per_page=10', { headers: ghHeaders });
                     if (aRes.ok) {
@@ -1122,11 +1141,13 @@ export const UI_SCRIPT: string = `
         if (!v.isSuccess) {
           if (st.error) {
             reasonText = st.error;
-          } else if (st.is_stale) {
+          } else if (validGh && Array.isArray(validGh.annotations) && validGh.annotations.length > 0) {
+            reasonText = validGh.annotations[0];
+          } else if (st.is_stale && v.verdict === 'timed_out') {
             reasonText = '升級任務超過 20 分鐘無心跳更新';
-          } else if (Array.isArray(st.logs) && st.logs.length > 0) {
+          } else if (Array.isArray(st.logs) && st.logs.length > 0 && s !== 'running') {
             reasonText = st.logs[st.logs.length - 1];
-          } else if (st.step) {
+          } else if (st.step && s !== 'running') {
             reasonText = '停在步驟：' + st.step;
           }
         }

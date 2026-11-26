@@ -161,7 +161,15 @@ function extractLogSummary(rawLog: string, maxTailChars = 3200): { error_lines: 
   };
 }
 
-const REJECTION_SIGNAL_PATTERN = /(\brejected\b|安全閘門|拒絕修改|受保護|核心模組|核心功能|白名單|PROTECTED_CORE)/i;
+const REJECTION_SIGNAL_PATTERN = /(\brejected\b|reject_upgrade|安全閘門|拒絕修改|拒絕升級|受保護|核心模組|核心功能|白名單|PROTECTED_CORE)/i;
+const LOG_ACCESS_NOISE_PATTERN =
+  /(無法直接下載原始純文字\s*log|無法下載純文字\s*log|原始\s*log\s*下載通常需要認證|下載原始純文字\s*log\s*逾時|完成後才可下載完整純文字\s*log|actions\/jobs\/\d+\/logs.*403|HTTP\s*403.*原始.*log)/i;
+
+function isLogAccessNoise(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  return LOG_ACCESS_NOISE_PATTERN.test(trimmed);
+}
 
 function formatApiError(status: number, res: Response, contextLabel: string): string {
   const remaining = res.headers.get('x-ratelimit-remaining');
@@ -230,19 +238,36 @@ function buildUpgradeVerdictSummary(
     const errLines = Array.isArray(job.error_lines) ? job.error_lines : [];
     for (const line of errLines) {
       const trimmed = asTrimmedString(line);
-      if (trimmed && !failureReasons.includes(trimmed)) failureReasons.push(trimmed);
+      if (trimmed && !isLogAccessNoise(trimmed) && !failureReasons.includes(trimmed)) {
+        failureReasons.push(trimmed);
+      }
     }
 
     if (failureReasons.length === 0) {
       const tail = asTrimmedString(job.log_tail);
       if (tail) {
-        const tailLines = tail.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+        const tailLines = tail
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0 && !isLogAccessNoise(l));
         for (const tl of tailLines.slice(-3)) {
           if (!failureReasons.includes(tl)) failureReasons.push(tl);
         }
-      } else {
-        const note = asTrimmedString(job.log_access_note);
-        if (note && !failureReasons.includes(note)) failureReasons.push(note);
+      }
+    }
+  }
+
+  if (!isSuccess && failureReasons.length === 0) {
+    for (const ann of annotationsSummary) {
+      if (!isLogAccessNoise(ann) && !failureReasons.includes(ann)) {
+        failureReasons.push(ann);
+      }
+    }
+    if (failureReasons.length === 0) {
+      for (const st of failedSteps) {
+        if (!failureReasons.includes(st)) {
+          failureReasons.push(st);
+        }
       }
     }
   }
@@ -466,7 +491,13 @@ export const githubActionsUpgradeStatusPlugin: PluginTool = {
       for (const job of rawJobs.slice(0, 5)) {
         const steps = Array.isArray(job.steps) ? job.steps : [];
         const failedSteps = steps
-          .filter((s) => s.conclusion === 'failure' || s.conclusion === 'cancelled' || s.conclusion === 'timed_out')
+          .filter(
+            (s) =>
+              s.conclusion === 'failure' ||
+              s.conclusion === 'cancelled' ||
+              s.conclusion === 'timed_out' ||
+              s.conclusion === 'action_required'
+          )
           .map((s) => ({ number: s.number, name: s.name, status: s.status, conclusion: s.conclusion }));
         const runningSteps = steps
           .filter((s) => s.status === 'in_progress')
