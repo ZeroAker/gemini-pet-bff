@@ -148,6 +148,19 @@ function readEditableFiles() {
   return files;
 }
 
+// 讀取唯讀核心檔案，讓模型對齊型別、API 路由與工具介面（受白名單保護，嚴禁修改）
+function readReadOnlyFiles() {
+  const targets = ['src/types.ts', 'src/index.ts', 'src/tools.ts'];
+  const files = {};
+  for (const relPath of targets) {
+    const absPath = path.resolve(relPath);
+    if (fs.existsSync(absPath)) {
+      files[relPath] = fs.readFileSync(absPath, 'utf8');
+    }
+  }
+  return files;
+}
+
 // 重置本地工作區（用於自我修復重試前清理上一輪失敗改動）
 function resetWorkspace() {
   execFileSync('git', ['reset', '--hard', 'HEAD'], { stdio: 'pipe' });
@@ -568,7 +581,11 @@ async function callModelWithFallback(modelsOrder, systemPrompt, contents, attemp
 }
 
 // 自我修復主迴圈：生成 -> 規則檢查 -> 寫入/Patch -> UI 沙盒驗證 -> tsc 檢查
-async function generateAndVerifyWithHealing(editableFiles) {
+async function generateAndVerifyWithHealing(editableFiles, readOnlyFiles) {
+  const readOnlyFilesText = Object.entries(readOnlyFiles)
+    .map(([filePath, content]) => `--- READ-ONLY FILE: ${filePath} ---\n${content}`)
+    .join('\n\n');
+
   const existingFilesText = Object.entries(editableFiles)
     .map(([filePath, content]) => `--- FILE: ${filePath} ---\n${content}`)
     .join('\n\n');
@@ -580,7 +597,10 @@ async function generateAndVerifyWithHealing(editableFiles) {
       parts: [
         {
           text: [
-            '【目前所有可升級檔案的完整內容】',
+            '【核心唯讀參考檔案（嚴禁出現在 operations 中，僅供對齊型別、API 路由與回傳欄位）】',
+            readOnlyFilesText,
+            '',
+            '【目前所有可升級檔案的完整內容（允許修改的範圍）】',
             existingFilesText,
             '',
             `【主人的升級需求】\n${instruction}`,
@@ -700,9 +720,16 @@ async function main() {
   }
 
   const editableFiles = readEditableFiles();
-  await logStep('files_loaded', `已讀取 ${Object.keys(editableFiles).length} 個可升級檔案（含插件與 UI 模組）`);
+  const readOnlyFiles = readReadOnlyFiles();
+  await logStep(
+    'files_loaded',
+    `已讀取 ${Object.keys(editableFiles).length} 個可升級檔案，及 ${Object.keys(readOnlyFiles).length} 個唯讀參考檔案`
+  );
 
-  const { plan, modelUsed, attemptsUsed } = await generateAndVerifyWithHealing(editableFiles);
+  const { plan, modelUsed, attemptsUsed } = await generateAndVerifyWithHealing(
+    editableFiles,
+    readOnlyFiles
+  );
 
   if (plan.rejected) {
     record.status = 'rejected';
