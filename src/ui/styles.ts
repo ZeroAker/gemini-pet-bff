@@ -45,6 +45,13 @@ export const UI_STYLES: string = `
       transition: transform 0.25s ease;
     }
     .avatar.bounce { transform: scale(1.22) rotate(6deg); }
+    .title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
     .title {
       font-size: 15px;
       font-weight: 600;
@@ -53,13 +60,101 @@ export const UI_STYLES: string = `
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .pet-activity-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #ffeaa7;
+      background: rgba(108, 92, 231, 0.2);
+      border: 1px solid rgba(124, 111, 247, 0.45);
+      border-radius: 99px;
+      padding: 2px 9px;
+      white-space: nowrap;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .pet-activity-badge:hover {
+      border-color: #a29bfe;
+      background: rgba(108, 92, 231, 0.34);
+    }
     .stats {
       font-size: 12px;
       color: #9aa3bd;
-      margin-top: 2px;
+      margin-top: 3px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .pet-extra-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .boredom-meter {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #121521;
+      border: 1px solid #282f47;
+      border-radius: 99px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: #cfd5e6;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+      transition: border-color 0.2s;
+    }
+    .boredom-meter:hover {
+      border-color: #6c5ce7;
+    }
+    .boredom-label {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .boredom-label strong {
+      color: #fab1a0;
+      font-weight: 600;
+    }
+    .boredom-track {
+      width: 52px;
+      height: 5px;
+      background: #0b0d14;
+      border-radius: 99px;
+      overflow: hidden;
+      border: 1px solid #252b42;
+      flex-shrink: 0;
+    }
+    .boredom-fill {
+      height: 100%;
+      border-radius: 99px;
+      transition: width 0.35s ease, background 0.3s ease;
+    }
+    .boredom-fill.low {
+      background: linear-gradient(90deg, #00cec9, #81ecec);
+    }
+    .boredom-fill.mid {
+      background: linear-gradient(90deg, #fdcb6e, #ffeaa7);
+    }
+    .boredom-fill.high {
+      background: linear-gradient(90deg, #e17055, #ff7675);
+    }
+    .status-note-text {
+      font-size: 11px;
+      color: #8c96b2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 320px;
     }
     .header-actions {
       display: flex;
@@ -229,6 +324,21 @@ export const UI_STYLES: string = `
       }
       .stats {
         font-size: 11px;
+      }
+      .pet-activity-badge {
+        font-size: 10.5px;
+        padding: 1px 7px;
+      }
+      .boredom-meter {
+        font-size: 10.5px;
+        padding: 1px 7px;
+      }
+      .boredom-track {
+        width: 42px;
+      }
+      .status-note-text {
+        max-width: 180px;
+        font-size: 10.5px;
       }
       .header-actions {
         gap: 5px;

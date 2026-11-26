@@ -13,6 +13,12 @@ export const UI_SCRIPT: string = `
     var sendBtn = document.getElementById('sendBtn');
     var petEmojiEl = document.getElementById('petEmoji');
     var petStatsEl = document.getElementById('petStats');
+    var petActivityBadgeEl = document.getElementById('petActivityBadge');
+    var petActivityTextEl = document.getElementById('petActivityText');
+    var petBoredomChipEl = document.getElementById('petBoredomChip');
+    var petBoredomTextEl = document.getElementById('petBoredomText');
+    var petBoredomFillEl = document.getElementById('petBoredomFill');
+    var petStatusNoteEl = document.getElementById('petStatusNote');
     var petStageEl = document.getElementById('petStage');
     var modalEl = document.getElementById('settingsModal');
     var tokenInput = document.getElementById('tokenInput');
@@ -129,6 +135,9 @@ export const UI_SCRIPT: string = `
       if (typeof window.refreshUpgradeStatusOnce === 'function') {
         window.refreshUpgradeStatusOnce();
       }
+      if (typeof window.syncPetStateFromServer === 'function') {
+        window.syncPetStateFromServer();
+      }
     };
 
     // ==================== [CHAT_API] ====================
@@ -188,11 +197,30 @@ export const UI_SCRIPT: string = `
         triggerAvatarBounce();
 
         if (data.pet_state) {
-          if (typeof window.syncPetStatsFromBackend === 'function') {
-            window.syncPetStatsFromBackend(data.pet_state.affection, data.pet_state.energy);
-          } else {
-            petStatsEl.textContent = '好感度 ' + data.pet_state.affection + ' ｜ 活力 ' + data.pet_state.energy;
+          var rawExtra = (data.pet_state.extra && typeof data.pet_state.extra === 'object') ? data.pet_state.extra : {};
+          var interactExtra = {
+            boredom: 0,
+            activity: '搖住尾巴開心地陪喺主人身邊 ✨'
+          };
+          if (typeof rawExtra.activity === 'string' && rawExtra.activity.trim() && rawExtra.boredom === 0) {
+            interactExtra.activity = rawExtra.activity.trim();
           }
+          if (typeof window.syncPetStatsFromBackend === 'function') {
+            window.syncPetStatsFromBackend(
+              data.pet_state.affection,
+              data.pet_state.energy,
+              interactExtra,
+              data.pet_state.status_note || '',
+              emotion
+            );
+          } else {
+            petStatsEl.textContent = '好感度 ' + data.pet_state.affection + ' ｜ 活力 ' + data.pet_state.energy + ' ｜ 無聊度 0%';
+          }
+          setTimeout(function () {
+            if (typeof window.triggerLifecycleTick === 'function') {
+              window.triggerLifecycleTick(true);
+            }
+          }, 650);
         }
 
         var metaParts = [];
@@ -1500,18 +1528,38 @@ export const UI_SCRIPT: string = `
       return '昏昏欲睡・急需補充能量 😪';
     }
 
+    function getFallbackActivityText(energy, boredom) {
+      if (energy < 35) return '趴喺鍵盤上面瞇眼抖緊氣 😪';
+      if (boredom >= 80) return '追緊雷射筆紅點狂奔解悶 🔴';
+      if (boredom >= 50) return '趴喺鍵盤上面偷睇主人做緊咩 👀';
+      if (boredom >= 24) return '追緊雷射筆、自己撲蝶仔玩 🦋';
+      return '伸懶腰中，喺桌面四圍巡邏 🐾';
+    }
+
     function loadCareLocalStore() {
       try {
         var raw = localStorage.getItem(CARE_STORAGE_KEY);
-        if (!raw) return { energy: 75, affection: 60, lastFedAt: 0 };
+        if (!raw) {
+          return { energy: 75, affection: 60, boredom: 0, activity: '伸懶腰中，喺桌面四圍巡邏 🐾', statusNote: '', lastFedAt: 0 };
+        }
         var parsed = JSON.parse(raw);
+        var energyVal = clampVal(parsed.energy !== undefined ? parsed.energy : 75);
+        var affectionVal = clampVal(parsed.affection !== undefined ? parsed.affection : 60);
+        var boredomVal = clampVal(parsed.boredom !== undefined ? parsed.boredom : 0);
+        var activityVal = (typeof parsed.activity === 'string' && parsed.activity.trim())
+          ? parsed.activity.trim()
+          : getFallbackActivityText(energyVal, boredomVal);
+        var noteVal = (typeof parsed.statusNote === 'string') ? parsed.statusNote : '';
         return {
-          energy: clampVal(parsed.energy !== undefined ? parsed.energy : 75),
-          affection: clampVal(parsed.affection !== undefined ? parsed.affection : 60),
+          energy: energyVal,
+          affection: affectionVal,
+          boredom: boredomVal,
+          activity: activityVal,
+          statusNote: noteVal,
           lastFedAt: parsed.lastFedAt || 0
         };
       } catch (e) {
-        return { energy: 75, affection: 60, lastFedAt: 0 };
+        return { energy: 75, affection: 60, boredom: 0, activity: '伸懶腰中，喺桌面四圍巡邏 🐾', statusNote: '', lastFedAt: 0 };
       }
     }
 
@@ -1533,21 +1581,56 @@ export const UI_SCRIPT: string = `
 
     function updateCareUiDisplay() {
       var st = loadCareLocalStore();
+      var boredomVal = clampVal(st.boredom !== undefined ? st.boredom : 0);
+      var activityStr = (typeof st.activity === 'string' && st.activity.trim())
+        ? st.activity.trim()
+        : getFallbackActivityText(st.energy, boredomVal);
+
       careEnergyTextEl.textContent = st.energy + ' / 100';
       careEnergyBarEl.style.width = st.energy + '%';
       careAffectionTextEl.textContent = st.affection + ' / 100';
       careAffectionBarEl.style.width = st.affection + '%';
-      careMoodTextEl.textContent = '狀態：' + getMoodLabel(st.energy, st.affection);
-      petStatsEl.textContent = '好感度 ' + st.affection + ' ｜ 活力 ' + st.energy;
+      careMoodTextEl.textContent = '狀態：' + getMoodLabel(st.energy, st.affection) + ' ｜ 無聊度 ' + boredomVal + '% ｜ ' + activityStr;
+
+      petStatsEl.textContent = '好感度 ' + st.affection + ' ｜ 活力 ' + st.energy + ' ｜ 無聊度 ' + boredomVal + '%';
+      if (petActivityTextEl) {
+        petActivityTextEl.textContent = activityStr;
+      }
+      if (petBoredomTextEl) {
+        petBoredomTextEl.textContent = boredomVal + '%';
+      }
+      if (petBoredomFillEl) {
+        petBoredomFillEl.style.width = boredomVal + '%';
+        var fillLevel = boredomVal >= 70 ? 'high' : (boredomVal >= 35 ? 'mid' : 'low');
+        petBoredomFillEl.className = 'boredom-fill ' + fillLevel;
+      }
+      if (petStatusNoteEl) {
+        petStatusNoteEl.textContent = st.statusNote ? ('💬 ' + st.statusNote) : '';
+        petStatusNoteEl.title = st.statusNote || '';
+      }
     }
 
-    window.syncPetStatsFromBackend = function (affectionVal, energyVal) {
+    window.syncPetStatsFromBackend = function (affectionVal, energyVal, extraObj, statusNoteVal, moodVal) {
       var st = loadCareLocalStore();
       if (affectionVal !== undefined && affectionVal !== null) {
         st.affection = clampVal(affectionVal);
       }
       if (energyVal !== undefined && energyVal !== null) {
         st.energy = clampVal(energyVal);
+      }
+      if (extraObj && typeof extraObj === 'object') {
+        if (extraObj.boredom !== undefined && extraObj.boredom !== null) {
+          st.boredom = clampVal(extraObj.boredom);
+        }
+        if (typeof extraObj.activity === 'string' && extraObj.activity.trim()) {
+          st.activity = extraObj.activity.trim();
+        }
+      }
+      if (typeof statusNoteVal === 'string') {
+        st.statusNote = statusNoteVal;
+      }
+      if (moodVal && EMOJI_MAP[moodVal]) {
+        petEmojiEl.textContent = EMOJI_MAP[moodVal];
       }
       saveCareLocalStore(st);
       updateCareUiDisplay();
@@ -1581,6 +1664,8 @@ export const UI_SCRIPT: string = `
       var beforeEnergy = st.energy;
       st.energy = clampVal(st.energy + snack.energyGain);
       st.affection = clampVal(st.affection + snack.affectionGain);
+      st.boredom = 0;
+      st.activity = '津津有味咁嘆緊' + snack.name + ' ' + snack.emoji;
       st.lastFedAt = nowMs;
       saveCareLocalStore(st);
       updateCareUiDisplay();
@@ -1619,6 +1704,8 @@ export const UI_SCRIPT: string = `
       var beforeE = st.energy;
       st.energy = clampVal(st.energy + energyAdd);
       st.affection = clampVal(st.affection + affectionAdd);
+      st.boredom = 0;
+      st.activity = '同主人玩緊猜拳大作戰，興奮搖尾巴 🎲';
       saveCareLocalStore(st);
       updateCareUiDisplay();
 
@@ -1686,6 +1773,8 @@ export const UI_SCRIPT: string = `
       var beforeE = st.energy;
       st.energy = clampVal(st.energy + energyGain);
       st.affection = clampVal(st.affection + affectionGain);
+      st.boredom = 0;
+      st.activity = '蹦蹦跳跳接住滿滿愛心 💖';
       saveCareLocalStore(st);
       updateCareUiDisplay();
       animateCareStage('😸');
@@ -1722,22 +1811,62 @@ export const UI_SCRIPT: string = `
     }
       
     function applyPetState(ps) {
-      if (!ps) return;
-      if (ps.mood) petEmojiEl.textContent = EMOJI_MAP[ps.mood] || '🐱';
-      const note = ps.status_note ? ' · ' + ps.status_note : '';
-      petStatsEl.textContent = '好感度 ' + ps.affection + ' ｜ 活力 ' + ps.energy + note;
+      if (!ps || typeof ps !== 'object') return;
+      var extra = (ps.extra && typeof ps.extra === 'object') ? ps.extra : {};
+      window.syncPetStatsFromBackend(ps.affection, ps.energy, extra, ps.status_note || '', ps.mood || '');
+    }
+
+    async function triggerLifecycleTick(silent) {
+      var cfg = getConfig();
+      if (!cfg.token) return null;
+      try {
+        var res = await fetch('/v1/pet/lifecycle/tick?uid=' + encodeURIComponent(cfg.uid), {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + cfg.token }
+        });
+        var data = await res.json();
+        if (data && data.ok && data.pet_state) {
+          applyPetState(data.pet_state);
+          if (!silent) {
+            triggerAvatarBounce();
+          }
+          return data.pet_state;
+        }
+      } catch (e) {}
+      return null;
     }
 
     async function syncPetState() {
-      const cfg = getConfig();
+      var cfg = getConfig();
       if (!cfg.token) return;
       try {
-        const res = await fetch('/v1/pet/state?uid=' + encodeURIComponent(cfg.uid), {
+        var res = await fetch('/v1/pet/state?uid=' + encodeURIComponent(cfg.uid), {
           headers: { 'Authorization': 'Bearer ' + cfg.token }
         });
-        const data = await res.json();
-        if (data.ok && data.pet_state) applyPetState(data.pet_state);
+        var data = await res.json();
+        if (data && data.ok && data.pet_state) {
+          var ext = data.pet_state.extra;
+          if (!ext || typeof ext !== 'object' || ext.boredom === undefined || !ext.activity) {
+            await triggerLifecycleTick(true);
+          } else {
+            applyPetState(data.pet_state);
+          }
+        }
       } catch (e) {}
+    }
+
+    window.triggerLifecycleTick = triggerLifecycleTick;
+    window.syncPetStateFromServer = syncPetState;
+
+    if (petActivityBadgeEl) {
+      petActivityBadgeEl.onclick = function () {
+        triggerLifecycleTick(false);
+      };
+    }
+    if (petBoredomChipEl) {
+      petBoredomChipEl.onclick = function () {
+        triggerLifecycleTick(false);
+      };
     }
 
     document.getElementById('careGameBtn').onclick = function () {
@@ -1805,4 +1934,12 @@ export const UI_SCRIPT: string = `
     window.petStageElement = petStageEl;
 
     updateCareUiDisplay();
+    if (getConfig().token) {
+      syncPetState();
+    }
+    setInterval(function () {
+      if (getConfig().token) {
+        syncPetState();
+      }
+    }, 60000);
 `;
