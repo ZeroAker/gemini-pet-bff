@@ -110,6 +110,34 @@ export const UI_STYLES: string = `
       gap: 8px;
       margin-bottom: 6px;
     }
+    .upgrade-verdict-detail {
+      display: none;
+      margin-bottom: 6px;
+      padding: 7px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .upgrade-verdict-detail.error {
+      display: block;
+      background: rgba(214, 48, 49, 0.14);
+      border: 1px solid rgba(255, 118, 117, 0.45);
+      color: #ffb8b8;
+    }
+    .upgrade-verdict-detail.rejected {
+      display: block;
+      background: rgba(225, 112, 85, 0.16);
+      border: 1px solid rgba(250, 177, 160, 0.5);
+      color: #ffd3c4;
+    }
+    .upgrade-verdict-detail.success {
+      display: block;
+      background: rgba(0, 184, 148, 0.14);
+      border: 1px solid rgba(85, 239, 196, 0.4);
+      color: #b8f7e6;
+    }
     .header-progress-slot {
       display: none;
       width: 100%;
