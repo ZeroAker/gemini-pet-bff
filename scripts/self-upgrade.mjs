@@ -23,6 +23,14 @@ const READ_ONLY_CORE_FILES = [
   'wrangler.toml',
 ];
 
+const PROTECTED_FILES = [
+  'src/ui.ts',
+  'src/ui/ui-module-types.ts',
+  'src/plugins/registry.ts',
+  'src/plugins/lifecycle.ts',
+  'src/plugins/stickers.ts',
+];
+
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 超過 5 分鐘完全無新 chunk 先判逾時
 const HARD_TIMEOUT_MS = 20 * 60 * 1000; // 單一思考步驟總上限 20 分鐘
 const HEARTBEAT_INTERVAL_MS = 20 * 1000; // 每 20 秒回寫一次心跳給 PWA
@@ -366,13 +374,12 @@ function getGitChangedFiles() {
 }
 
 function runAllChecks(uiTouched) {
-  // 1. 掃描所有可編輯檔案安全性
+  // 1. 掃描所有可編輯檔案安全性與不可刪除核心檔案完整性
   const { editable_files } = listProjectFiles();
-  if (!editable_files.includes('src/plugins/registry.ts')) {
-    throw new Error('安全攔截：缺少必要檔案 src/plugins/registry.ts');
-  } 
-  if (!editable_files.includes('src/plugins/stickers.ts')) {
-    throw new Error('安全攔截：缺少必要檔案 src/plugins/stickers.ts');
+  for (const protectedPath of PROTECTED_FILES) {
+    if (!editable_files.includes(protectedPath) || !fs.existsSync(path.resolve(protectedPath))) {
+      throw new Error(`安全攔截：缺少必要核心檔案 ${protectedPath}`);
+    }
   }
   for (const relPath of editable_files) {
     const content = fs.readFileSync(path.resolve(relPath), 'utf8');
@@ -476,7 +483,7 @@ const AGENT_TOOL_DECLARATIONS = [
   },
   {
     name: 'delete_file',
-    description: '刪除不再需要的自訂插件或 UI 子模組（禁止刪除 src/ui.ts 與 src/plugins/registry.ts）。',
+    description: `刪除不再需要的自訂插件或 UI 子模組（嚴禁刪除受保護核心檔案：${PROTECTED_FILES.join('、')}）。`,
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -713,20 +720,12 @@ async function executeTool(name, args, session) {
       if (!isEditablePath(relPath)) {
         return { ok: false, error: `安全攔截：禁止刪除核心或未授權路徑 (${relPath})` };
       }
-      if (relPath === 'src/ui.ts' || relPath === 'src/plugins/registry.ts') {
+      if (PROTECTED_FILES.includes(relPath)) {
         return { ok: false, error: `安全攔截：禁止刪除必要檔案 (${relPath})` };
       }
       const absPath = path.resolve(relPath);
       if (!fs.existsSync(absPath)) {
         return { ok: false, error: `檔案原本就不存在：${relPath}` };
-      }
-      if (
-        relPath === 'src/ui.ts' ||
-        relPath === 'src/plugins/registry.ts' ||
-        relPath === 'src/plugins/lifecycle.ts' ||
-        relPath === 'src/plugins/stickers.ts'
-      ) {
-        return { ok: false, error: `安全攔截：禁止刪除必要檔案 (${relPath})` };
       }
       fs.unlinkSync(absPath);
 
@@ -1105,7 +1104,7 @@ function buildSystemPrompt() {
     '【最高安全與核心保護規則】',
     `1. 絕對不可損害或刪除核心功能（核心工具包含：${PROTECTED_CORE_TOOLS.join(', ')}，以及對話記憶、路由、自我升級本身）。`,
     '2. 若主人要求刪除或破壞核心功能，請直接呼叫 reject_upgrade 說明原因。',
-    '3. 可編輯路徑僅限：src/plugins/[a-z][a-z0-9-]*.ts、src/ui.ts、src/ui/[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*)?.(ts|html|css)。嚴禁刪除 src/plugins/registry.ts 與 src/ui.ts。',
+    `3. 可編輯路徑僅限：src/plugins/[a-z][a-z0-9-]*.ts、src/ui.ts、src/ui/[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*)?.(ts|html|css)。嚴禁刪除以下必要核心檔案：${PROTECTED_FILES.join('、')}。`,
     '4. 唯讀參考檔案（src/types.ts、src/index.ts、src/tools.ts 等）僅供閱讀對齊 API 與型別，不可修改。',
     '5. 新增或刪除插件時，必須同步更新 src/plugins/registry.ts，確保所有 import 與 CUSTOM_PLUGINS 陣列一致。',
     '6. 後端僅能使用標準 Web API（fetch、URL、Intl、crypto）與純 TypeScript strict mode（無 any、無未使用變數、不新增外部 npm 套件）。',
