@@ -164,6 +164,188 @@ export const UI_SCRIPT: string = `
       return box;
     }
 
+    function escapeHTML(raw) {
+      return String(raw === undefined || raw === null ? '' : raw)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderMarkdownSafe(rawText) {
+      if (!rawText) return '';
+      var escaped = escapeHTML(rawText);
+      var LF = String.fromCharCode(10);
+      var CR = String.fromCharCode(13);
+      var BT = String.fromCharCode(96);
+
+      escaped = escaped.split(CR + LF).join(LF).split(CR).join(LF);
+
+      var blockCodeStore = [];
+      var inlineCodeStore = [];
+
+      var fenceToken = BT + BT + BT;
+      if (escaped.indexOf(fenceToken) >= 0) {
+        var fenceParts = escaped.split(fenceToken);
+        if (fenceParts.length >= 3) {
+          var rebuilt = [];
+          for (var fi = 0; fi < fenceParts.length; fi++) {
+            if (fi % 2 === 1 && fi < fenceParts.length - 1) {
+              var rawBlock = fenceParts[fi];
+              var firstLf = rawBlock.indexOf(LF);
+              if (firstLf >= 0) {
+                var firstLine = rawBlock.slice(0, firstLf).trim();
+                if (/^[a-zA-Z0-9_+-]{1,20}$/.test(firstLine)) {
+                  rawBlock = rawBlock.slice(firstLf + 1);
+                }
+              }
+              while (rawBlock.indexOf(LF) === 0) {
+                rawBlock = rawBlock.slice(1);
+              }
+              while (rawBlock.length > 0 && rawBlock.charAt(rawBlock.length - 1) === LF) {
+                rawBlock = rawBlock.slice(0, -1);
+              }
+              var bIdx = blockCodeStore.length;
+              blockCodeStore.push('<pre class="md-code-block"><code>' + rawBlock + '</code></pre>');
+              var prevStr = rebuilt.length > 0 ? rebuilt[rebuilt.length - 1] : '';
+              var needLeadLf = prevStr.length > 0 && prevStr.charAt(prevStr.length - 1) !== LF;
+              var nextStr = fenceParts[fi + 1] || '';
+              var needTrailLf = nextStr.length > 0 && nextStr.charAt(0) !== LF;
+              rebuilt.push((needLeadLf ? LF : '') + '@@MD_BLOCK_CODE_' + bIdx + '@@' + (needTrailLf ? LF : ''));
+            } else if (fi % 2 === 1 && fi === fenceParts.length - 1) {
+              rebuilt[rebuilt.length - 1] = rebuilt[rebuilt.length - 1] + fenceToken + fenceParts[fi];
+            } else {
+              rebuilt.push(fenceParts[fi]);
+            }
+          }
+          escaped = rebuilt.join('');
+        }
+      }
+
+      var inlineCodeRe = new RegExp(BT + '([^' + BT + LF + ']+)' + BT, 'g');
+      escaped = escaped.replace(inlineCodeRe, function (_, codeContent) {
+        var cIdx = inlineCodeStore.length;
+        inlineCodeStore.push('<code class="md-inline-code">' + codeContent + '</code>');
+        return '@@MD_INLINE_CODE_' + cIdx + '@@';
+      });
+
+      function formatInline(str) {
+        var out = str;
+        out = out.replace(/\\*\\*\\*([^*]+)\\*\\*\\*/g, '<strong><em>$1</em></strong>');
+        out = out.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
+        out = out.replace(/\\*([^ *][^*]*?[^ *]|[^ *])\\*/g, '<em>$1</em>');
+        out = out.replace(/@@MD_INLINE_CODE_([0-9]+)@@/g, function (_, idxStr) {
+          var idx = parseInt(idxStr, 10);
+          return inlineCodeStore[idx] !== undefined ? inlineCodeStore[idx] : '';
+        });
+        return out;
+      }
+
+      var lines = escaped.split(LF);
+      var tokens = [];
+      var listItems = [];
+
+      function flushList() {
+        if (listItems.length > 0) {
+          tokens.push({
+            type: 'block',
+            html: '<ul class="md-list">' + listItems.join('') + '</ul>'
+          });
+          listItems = [];
+        }
+      }
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var trimmed = line.trim();
+
+        var blockCodeMatch = trimmed.match(/^@@MD_BLOCK_CODE_([0-9]+)@@$/);
+        if (blockCodeMatch) {
+          flushList();
+          var bIndex = parseInt(blockCodeMatch[1], 10);
+          tokens.push({
+            type: 'block',
+            html: blockCodeStore[bIndex] || ''
+          });
+          continue;
+        }
+
+        if (/^[ \\t]*---+[ \\t]*$/.test(line)) {
+          flushList();
+          tokens.push({
+            type: 'block',
+            html: '<hr class="md-hr" />'
+          });
+          continue;
+        }
+
+        var headingMatch = line.match(/^[ \\t]*(#{1,3})[ \\t]+(.+)$/);
+        if (headingMatch) {
+          flushList();
+          var hLevel = headingMatch[1].length;
+          var hContent = formatInline(headingMatch[2].trim());
+          tokens.push({
+            type: 'block',
+            html: '<h' + hLevel + ' class="md-heading md-h' + hLevel + '">' + hContent + '</h' + hLevel + '>'
+          });
+          continue;
+        }
+
+        var listMatch = line.match(/^[ \\t]*[-*][ \\t]+(.+)$/);
+        if (listMatch) {
+          listItems.push('<li class="md-list-item">' + formatInline(listMatch[1]) + '</li>');
+          continue;
+        }
+
+        flushList();
+        if (trimmed === '') {
+          tokens.push({ type: 'empty', html: '' });
+        } else {
+          tokens.push({ type: 'text', html: formatInline(line) });
+        }
+      }
+      flushList();
+
+      var resultParts = [];
+      var textBuffer = [];
+      var hasPrevBlock = false;
+
+      function flushTextBuffer(hasNextBlock) {
+        if (textBuffer.length === 0) return;
+        var startIdx = 0;
+        var endIdx = textBuffer.length - 1;
+        if (hasPrevBlock && startIdx <= endIdx && textBuffer[startIdx].type === 'empty') {
+          startIdx++;
+        }
+        if (hasNextBlock && endIdx >= startIdx && textBuffer[endIdx].type === 'empty') {
+          endIdx--;
+        }
+        if (startIdx <= endIdx) {
+          var segs = [];
+          for (var ti = startIdx; ti <= endIdx; ti++) {
+            segs.push(textBuffer[ti].html);
+          }
+          resultParts.push(segs.join('<br />'));
+        }
+        textBuffer = [];
+      }
+
+      for (var k = 0; k < tokens.length; k++) {
+        var tk = tokens[k];
+        if (tk.type === 'block') {
+          flushTextBuffer(true);
+          resultParts.push(tk.html);
+          hasPrevBlock = true;
+        } else {
+          textBuffer.push(tk);
+        }
+      }
+      flushTextBuffer(false);
+
+      return resultParts.join('');
+    }
+
     function renderMessage(role, text, metaText, timestamp, stickerObj) {
       var wrap = document.createElement('div');
       wrap.className = 'msg ' + role;
@@ -188,7 +370,7 @@ export const UI_SCRIPT: string = `
 
         var textEl = document.createElement('div');
         textEl.className = 'bubble-text';
-        textEl.textContent = text || '';
+        textEl.innerHTML = renderMarkdownSafe(text || '');
         bubble.appendChild(textEl);
 
         if (timeStr) {

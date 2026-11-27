@@ -1,4 +1,4 @@
-import type { PluginTool } from '../types';
+import type { PluginContext, PluginTool } from '../types';
 import { githubActionsUpgradeStatusPlugin } from './github-actions-upgrade-status';
 
 export type ScheduleType = 'daily' | 'interval' | 'idle';
@@ -1437,7 +1437,7 @@ async function checkTrackedUpgradeProgress(
   store: ProactiveUserStore,
   kvLatest: KvLatestUpgradeSnapshot | null,
   args: Record<string, unknown>,
-  ctx: { userId: string },
+  ctx: PluginContext,
   nowIso: string,
   nowMs: number
 ): Promise<{ notification: DueNotificationItem | null; changed: boolean }> {
@@ -1857,7 +1857,7 @@ export const proactiveMessagesPlugin: PluginTool = {
       required: ['action'],
     },
   },
-  async execute(args: Record<string, unknown>, ctx: { userId: string }): Promise<Record<string, unknown>> {
+  async execute(args: Record<string, unknown>, ctx: PluginContext): Promise<Record<string, unknown>> {
     const userId = asTrimmedString(ctx?.userId) || 'default_user';
     const action = asTrimmedString(args.action).toLowerCase();
 
