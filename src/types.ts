@@ -8,6 +8,7 @@ export interface Env {
   MODEL_BALANCED?: string;
   MODEL_DEEP?: string;
   MODEL_UPGRADER?: string;
+  MODEL_DREAMER?: string;
   GITHUB_TOKEN?: string;
   GITHUB_OWNER?: string;
   GITHUB_REPO?: string;

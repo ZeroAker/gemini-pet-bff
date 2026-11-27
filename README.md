@@ -18,8 +18,8 @@
 ### 2. 跨裝置分層記憶與深夜「發夢」系統
 - **即時短期記憶（Upstash Redis）**：保存最近 12 輪對話、好感度、活力值、無聊度、跨裝置待辦與分散式並發鎖（25s TTL）。
 - **語意長期記憶（Mem0 v3）**：自動檢索與非同步提煉使用者長期偏好與生活習慣。
-- **深夜發夢引擎（`nightly-dream.yml` / `scripts/nightly-dream.mjs`）**：
-  - 每日香港時間 **03:00** 自動執行（亦支援從 PWA 或 API 手動觸發）。
+- **深夜發夢引擎（Cloudflare Cron Job / `src/dream.ts`）**：
+  - 每日香港時間 **03:00** 由 Cloudflare Cron Trigger (`0 * * * *`) 自動執行（亦支援從 PWA「🌙 立即發夢」或 `POST /v1/pet/dream/trigger` 即時觸發）。
   - 整理當日 `dream_inbox` 對話，產出**第一人稱桌寵日記**（最多保留 60 篇）與翌日注入用的**近期近況快照**（`recent_snapshot`）。
   - **四軸性格微演化**：溫柔（`warmth`）、俏皮（`playfulness`）、吐槽（`teasing`）、詳盡（`chattiness`），每日漂移嚴格限制在 `±5` 以內，內建 Prompt Injection 過濾，並保留最近 **7 個歷史版本**支援一鍵回滾。
   - 將新發現的高價值事實非破壞性追加至 Mem0。
@@ -65,6 +65,7 @@ gemini-pet-bff/
 │   └── self-upgrade.mjs                 # 20 輪多步自主寫碼、沙盒檢查、PR 與自動合併引擎
 ├── src/
 │   ├── index.ts                         # Hono 路由入口、認證 API 與 Cloudflare Cron Handler
+│   ├── dream.ts                         # 深夜發夢引擎（日記生成、性格微調與 Mem0 精煉）
 │   ├── services.ts                      # StateService (Redis)、MemoryService (Mem0)、GeminiService (Vertex AI)
 │   ├── tools.ts                         # 核心工具實作、按意圖動態掛載與自訂插件沙盒派發器
 │   ├── types.ts                         # 全專案 TypeScript Strict 型別與 .html/.css 模組宣告

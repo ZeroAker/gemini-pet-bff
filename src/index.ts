@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { DreamService } from './dream';
 import { computeNextLifecycleState } from './plugins/lifecycle';
 import { GeminiService, MemoryService, StateService } from './services';
 import type { Env, InteractRequest, PetState } from './types';
@@ -236,50 +237,31 @@ app.post('/v1/pet/persona/rollback', async (c) => {
   return c.json(result);
 });
 
-// 手動派發一次「發夢」任務至 GitHub Actions（方便即時測試）
+// 手動觸發一次「發夢」反思與日記生成（直接於 Cloudflare Workers 執行）
 app.post('/v1/pet/dream/trigger', async (c) => {
   const auth = c.req.header('Authorization');
   if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
-  const token = (c.env.GITHUB_TOKEN || '').trim();
-  const owner = (c.env.GITHUB_OWNER || '').trim();
-  const repo = (c.env.GITHUB_REPO || '').trim();
-  const branch = (c.env.GITHUB_BRANCH || 'main').trim();
-  if (!token || !owner || !repo) {
-    return c.json({ ok: false, error: '尚未設定 GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO' }, 500);
-  }
 
   const userId = c.req.query('uid') || 'zero_main';
-  const force = c.req.query('force') === 'true' ? 'true' : 'false';
+  const force = c.req.query('force') === 'true';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const dreamSvc = new DreamService(c.env);
 
-  const res = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/actions/workflows/nightly-dream.yml/dispatches`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'GeminiPetDreamTrigger/1.0',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        ref: branch,
-        inputs: { user_id: userId, force },
-      }),
+  try {
+    const result = await dreamSvc.processUser(userId, stateSvc, { force });
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error || '發夢執行失敗' }, 500);
     }
-  );
-
-  if (!res.ok) {
-    return c.json({ ok: false, error: `派發失敗 (${res.status}): ${(await res.text()).slice(0, 200)}` }, 502);
+    return c.json({
+      ...result,
+      status: result.skipped ? 'skipped' : 'completed',
+      engine: 'cloudflare-workers',
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
   }
-
-  return c.json({
-    ok: true,
-    status: 'dispatched',
-    actions_url: `https://github.com/${owner}/${repo}/actions/workflows/nightly-dream.yml`,
-  });
 });
 
 app.get('/v1/pet/upgrade/status', async (c) => {
@@ -429,10 +411,19 @@ export default {
   fetch: app.fetch,
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const stateSvc = new StateService(env.UPSTASH_REDIS_REST_URL, env.UPSTASH_REDIS_REST_TOKEN);
+    const hkHour = getHongKongHour(new Date());
+
     const job = (async () => {
       const users = await stateSvc.getActiveUsers();
       const targets = users.length > 0 ? users : ['zero_main'];
       await Promise.all(targets.map((uid) => runLifecycleTick(uid, stateSvc)));
+
+      // 每日香港時間 03:00 自動執行深夜「發夢」記憶整理與性格演化
+      if (hkHour === 3) {
+        const dreamSvc = new DreamService(env);
+        const dreamResults = await dreamSvc.runForAllUsers(stateSvc, { force: false });
+        console.log('[Cron:NightlyDream]', JSON.stringify(dreamResults));
+      }
     })();
     ctx.waitUntil(job);
   },

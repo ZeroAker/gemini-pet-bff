@@ -20,6 +20,7 @@ const READ_ONLY_CORE_FILES = [
   'src/index.ts',
   'src/tools.ts',
   'src/services.ts',
+  'src/dream.ts',
   'package.json',
   'tsconfig.json',
   'wrangler.toml',

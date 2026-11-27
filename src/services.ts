@@ -186,6 +186,16 @@ export class StateService {
     await this.command(['EXPIRE', `dream_inbox:${userId}`, 604800]);
   }
 
+  async getDreamInboxRaw(userId: string): Promise<string[]> {
+    const res = await this.command<string[] | null>(['LRANGE', `dream_inbox:${userId}`, 0, -1]);
+    return Array.isArray(res) ? res : [];
+  }
+
+  async trimDreamInbox(userId: string, startIndex: number): Promise<void> {
+    if (startIndex <= 0) return;
+    await this.command(['LTRIM', `dream_inbox:${userId}`, startIndex, -1]);
+  }
+
   async getDreamProfile(userId: string): Promise<DreamProfile> {
     const nowIso = new Date().toISOString();
     const fallback: DreamProfile = {
@@ -237,6 +247,10 @@ export class StateService {
     } catch {
       return [];
     }
+  }
+
+  async saveDiaries(userId: string, diaries: PetDiaryEntry[]): Promise<void> {
+    await this.command(['SET', `diaries:${userId}`, JSON.stringify(diaries.slice(0, 60))]);
   }
 
   async rollbackPersona(userId: string): Promise<{

@@ -398,13 +398,17 @@ export const moduleDiaryPersona: UiFeatureModule = {
           var data = await res.json();
           await Promise.all([fetchPetPersona(), fetchPetDiaries()]);
           if (res.ok && data && data.ok) {
-            showDiaryPersonaNotice(
-              '🌙 已成功觸發立即發夢任務，並已重新載入性格與日記資料！（GitHub Actions 背景整理約需 30～60 秒完成，稍後可點重新整理查看最新成果）',
-              'success',
-              data.actions_url || '',
-              '查看發夢 Actions ↗'
-            );
-            triggerAvatarBounce();
+            if (data.skipped) {
+              showDiaryPersonaNotice('ℹ️ ' + (data.reason || '目前無新對話可供發夢整理。'), 'info');
+            } else {
+              showDiaryPersonaNotice(
+                '🌙 「立即發夢」完成！已寫下新日記「' + (data.diary_title || '桌寵日記') + '」並更新性格與記憶 ✨',
+                'success',
+                data.actions_url || '',
+                data.actions_url ? '查看發夢紀錄 ↗' : ''
+              );
+              triggerAvatarBounce();
+            }
           } else {
             showDiaryPersonaNotice(
               '⚠️ 立即發夢觸發失敗：' + ((data && data.error) ? data.error : ('HTTP ' + res.status)),

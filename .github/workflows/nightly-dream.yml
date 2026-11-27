@@ -1,8 +1,8 @@
-name: Nightly Dream (Memory & Persona)
+name: Nightly Dream (Manual Backup)
 
+# 每日 03:00 HKT 排程已遷移至 Cloudflare Workers Cron (src/index.ts -> src/dream.ts)
+# 此 workflow 保留供手動補跑或除錯使用
 on:
-  schedule:
-    - cron: '0 19 * * *' # 每日 03:00 HKT (UTC+8)
   workflow_dispatch:
     inputs:
       user_id:
