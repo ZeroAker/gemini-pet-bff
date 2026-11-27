@@ -1,4 +1,74 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
+    /* 美化所有模式的滑動條 (Slide bar / Scrollbar) */
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(162, 155, 254, 0.35) transparent;
+    }
+    ::-webkit-scrollbar {
+      width: 7px;
+      height: 7px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(162, 155, 254, 0.28);
+      border-radius: 999px;
+      border: 1px solid transparent;
+      background-clip: padding-box;
+      transition: background 0.25s ease, box-shadow 0.25s ease;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(162, 155, 254, 0.58);
+      box-shadow: 0 0 8px rgba(162, 155, 254, 0.45);
+    }
+    ::-webkit-scrollbar-thumb:active {
+      background: rgba(162, 155, 254, 0.85);
+    }
+    ::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+
+    /* 滑動輸入條美化 (Range Slider Bar) */
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+      outline: none;
+      transition: background 0.2s ease;
+      cursor: pointer;
+    }
+    input[type="range"]:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #a29bfe, #74b9ff);
+      box-shadow: 0 2px 8px rgba(162, 155, 254, 0.6);
+      cursor: pointer;
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.18);
+      box-shadow: 0 0 12px rgba(162, 155, 254, 0.9);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border: none;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #a29bfe, #74b9ff);
+      box-shadow: 0 2px 8px rgba(162, 155, 254, 0.6);
+      cursor: pointer;
+    }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: linear-gradient(180deg, #0f111a 0%, #141829 100%);
@@ -502,7 +572,8 @@
       filter: drop-shadow(0 8px 22px rgba(255, 118, 117, 0.58));
     }
     .pet-avatar-img.bounce {
-      animation: avatarQuickReact 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+      /* petEmoji 抖動/震動時保持立繪平穩，不觸發劇烈抖動動畫 */
+      animation: none !important;
     }
     @keyframes petStageBreath {
       0%, 100% { transform: translateY(0) scale(1); }

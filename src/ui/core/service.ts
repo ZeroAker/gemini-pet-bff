@@ -393,12 +393,6 @@ export const moduleCore: UiCoreSkeletonModule = {
           petEmojiEl.classList.remove('bounce');
         }, 520);
       }
-      if (desktopModeActive && petAvatarImgEl) {
-        petAvatarImgEl.classList.add('bounce');
-        setTimeout(function () {
-          petAvatarImgEl.classList.remove('bounce');
-        }, 520);
-      }
     }
 
     function triggerQuickAvatarReaction(tempEmoji) {
