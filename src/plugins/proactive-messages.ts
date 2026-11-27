@@ -21,6 +21,7 @@ export interface UpgradeTrackingState {
   repo: string;
   workflowFile: string;
   runId: string;
+  runAttempt?: number;
   actionsUrl: string;
   prUrl: string;
   summary: string;
@@ -56,6 +57,8 @@ export interface KvLatestUpgradeSnapshot {
   error: string;
   startedAt: string | null;
   updatedAt: string | null;
+  runAttempt?: number;
+  retrying?: boolean;
 }
 
 interface KvUpgradeAnalysis {
@@ -68,6 +71,8 @@ interface KvUpgradeAnalysis {
   isFailedOrCancelled: boolean;
   isMergedSuccess: boolean;
   isRunning: boolean;
+  isRetrying: boolean;
+  hasTransientError: boolean;
   verdict: 'success' | 'rejected' | 'cancelled' | 'timed_out' | 'failure' | 'running' | 'idle';
   reasons: string[];
 }
@@ -132,12 +137,26 @@ const RUN_ID_PATTERN = /^\d+$/;
 const WORKFLOW_PATTERN = /^[A-Za-z0-9_.-]+$/;
 
 const REJECTION_KEYWORD_PATTERN =
-  /(\brejected\b|reject_upgrade|安全閘門|拒絕修改|拒絕升級|受保護|核心模組|核心功能|白名單|不在可編輯|不可修改|禁止刪除|PROTECTED_CORE)/i;
+  /(\brejected\b|reject_upgrade|安全閘門(?:攔截|拒絕)|拒絕修改|拒絕升級|拒絕原因|受保護.*(?:拒絕|不可|禁止)|不在可編輯|不可修改|禁止刪除|PROTECTED_CORE)/i;
 
 const KV_CODE_ERROR_PATTERN =
   /(error\s+TS\d+|tsc\s+--noEmit.*(?:失敗|錯誤|error)|型別檢查(?:失敗|未通過|錯誤)|型別錯誤|語法錯誤|語法驗證(?:失敗|未通過)|SyntaxError|TypeError|沙盒驗證(?:失敗|未通過)|安全掃描(?:失敗|未通過)|編譯失敗|编译失败|run_checks\s*(?:失敗|未通過))/i;
 
 const KV_MERGE_SUCCESS_PATTERN = /(升級已自動合併至\s*main|已自動合併至\s*main|merged\s+to\s+main)/i;
+
+const RETRY_SIGNAL_PATTERN =
+  /(?:\bretry(?:ing)?\b|重試|重新嘗試|再次嘗試|attempt\s*[2-9]|第\s*[2-9]\s*次(?:嘗試|執行|重試))/i;
+
+const RETRY_EXHAUSTED_PATTERN =
+  /(?:已達重試上限|重試次數已用盡|超過最大重試|max\s*retries\s*(?:exceeded|reached)|all\s*(?:retries|attempts)\s*failed|最終失敗|放棄重試)/i;
+
+const ACTIONS_ACTIVE_STATUSES = new Set([
+  'queued',
+  'in_progress',
+  'waiting',
+  'pending',
+  'requested',
+]);
 
 const LOG_ACCESS_NOISE_PATTERN =
   /(無法直接下載原始純文字\s*log|無法下載純文字\s*log|原始\s*log\s*下載通常需要認證|下載原始純文字\s*log\s*逾時|完成後才可下載完整純文字\s*log|actions\/jobs\/\d+\/logs.*403|HTTP\s*403.*原始.*log|已達未認證速率上限)/i;
@@ -407,6 +426,12 @@ function normalizeKvUpgradeObject(raw: unknown): KvLatestUpgradeSnapshot | null 
     ? ((obj.changed_files ?? obj.changedFiles) as unknown[])
     : [];
   const changedFiles = rawFiles.map((f) => asTrimmedString(f)).filter((f) => f.length > 0);
+  const rawAttempt = obj.run_attempt ?? obj.runAttempt ?? obj.attempt;
+  const runAttempt = rawAttempt !== undefined && rawAttempt !== null && rawAttempt !== ''
+    ? asPositiveInt(rawAttempt, 1)
+    : undefined;
+  const rawRetrying = obj.retrying ?? obj.is_retrying ?? obj.isRetrying;
+  const retrying = rawRetrying !== undefined ? asBoolean(rawRetrying, false) : undefined;
 
   if (status.toLowerCase() === 'idle' && !actionsUrl && logs.length === 0 && !error) {
     return null;
@@ -427,6 +452,8 @@ function normalizeKvUpgradeObject(raw: unknown): KvLatestUpgradeSnapshot | null 
     error,
     startedAt,
     updatedAt,
+    ...(runAttempt !== undefined ? { runAttempt } : {}),
+    ...(retrying !== undefined ? { retrying } : {}),
   };
 }
 
@@ -545,7 +572,7 @@ async function loadKvLatestUpgrade(
     };
 
   if (fromArgsObj && kvSnapshot) {
-    if (fromArgsObj.status && fromArgsObj.status !== 'running') base.status = fromArgsObj.status;
+    if (fromArgsObj.status) base.status = fromArgsObj.status;
     if (fromArgsObj.step) base.step = fromArgsObj.step;
     if (fromArgsObj.actionsUrl) {
       const pArg = parseGitHubActionsUrl(fromArgsObj.actionsUrl);
@@ -559,6 +586,8 @@ async function loadKvLatestUpgrade(
     if (fromArgsObj.error) base.error = fromArgsObj.error;
     if (fromArgsObj.startedAt) base.startedAt = fromArgsObj.startedAt;
     if (fromArgsObj.updatedAt) base.updatedAt = fromArgsObj.updatedAt;
+    if (fromArgsObj.runAttempt !== undefined) base.runAttempt = fromArgsObj.runAttempt;
+    if (fromArgsObj.retrying !== undefined) base.retrying = fromArgsObj.retrying;
     for (const l of fromArgsObj.logs) {
       if (!base.logs.includes(l)) base.logs.push(l);
     }
@@ -597,6 +626,8 @@ function analyzeKvLatestUpgrade(kv: KvLatestUpgradeSnapshot | null): KvUpgradeAn
       isFailedOrCancelled: false,
       isMergedSuccess: false,
       isRunning: false,
+      isRetrying: false,
+      hasTransientError: false,
       verdict: 'idle',
       reasons: [],
     };
@@ -614,42 +645,112 @@ function analyzeKvLatestUpgrade(kv: KvLatestUpgradeSnapshot | null): KvUpgradeAn
   );
   const hasMergedLog = cleanLogs.some((l) => KV_MERGE_SUCCESS_PATTERN.test(l));
 
+  const isTerminalFailStatus =
+    statusLower === 'failed' ||
+    statusLower === 'error' ||
+    statusLower === 'rejected' ||
+    statusLower === 'cancelled' ||
+    statusLower === 'canceled' ||
+    statusLower === 'timed_out';
+
+  // 若重試後最終已合併成功（status/step 為 merged/success 或有合併成功日誌且非失敗最終狀態），
+  // 即使先前重試過程曾留下錯誤日誌，亦明確判定為最終成功
+  const isMergedSuccess =
+    statusLower === 'merged' ||
+    statusLower === 'success' ||
+    stepLower === 'merged' ||
+    stepLower === 'success' ||
+    (hasMergedLog && !isTerminalFailStatus);
+
+  if (isMergedSuccess) {
+    return {
+      hasKv: true,
+      statusLower,
+      stepLower,
+      isRejected: false,
+      isCancelled: false,
+      isTimedOut: false,
+      isFailedOrCancelled: false,
+      isMergedSuccess: true,
+      isRunning: false,
+      isRetrying: false,
+      hasTransientError: false,
+      verdict: 'success',
+      reasons: [],
+    };
+  }
+
+  let lastRetryIdx = -1;
+  let lastExhaustedIdx = -1;
+  for (let i = 0; i < cleanLogs.length; i++) {
+    const line = cleanLogs[i] ?? '';
+    if (RETRY_EXHAUSTED_PATTERN.test(line)) {
+      lastExhaustedIdx = i;
+    } else if (RETRY_SIGNAL_PATTERN.test(line)) {
+      lastRetryIdx = i;
+    }
+  }
+  const hasActiveRetryLog = lastRetryIdx >= 0 && lastRetryIdx > lastExhaustedIdx;
+
+  const isRetrying =
+    Boolean(kv.retrying) ||
+    statusLower === 'retrying' ||
+    statusLower === 'retry' ||
+    stepLower === 'retrying' ||
+    stepLower === 'retry' ||
+    RETRY_SIGNAL_PATTERN.test(stepLower) ||
+    (hasActiveRetryLog && !isTerminalFailStatus) ||
+    ((kv.runAttempt ?? 1) > 1 && isInProgressStatus(statusLower));
+
   const isRejected =
     statusLower === 'rejected' ||
     stepLower === 'rejected' ||
-    REJECTION_KEYWORD_PATTERN.test(cleanError) ||
-    rejectionLines.length > 0;
+    (!isInProgressStatus(statusLower) &&
+      !isRetrying &&
+      (REJECTION_KEYWORD_PATTERN.test(cleanError) || rejectionLines.length > 0));
 
   const isCancelled =
-    statusLower === 'cancelled' ||
-    statusLower === 'canceled' ||
-    stepLower === 'cancelled' ||
-    stepLower === 'canceled';
+    !isRetrying &&
+    (statusLower === 'cancelled' ||
+      statusLower === 'canceled' ||
+      (!isInProgressStatus(statusLower) && (stepLower === 'cancelled' || stepLower === 'canceled')));
 
-  const isTimedOut = statusLower === 'timed_out' || stepLower === 'timed_out';
+  const isTimedOut =
+    !isRetrying &&
+    (statusLower === 'timed_out' || (!isInProgressStatus(statusLower) && stepLower === 'timed_out'));
 
   const isFailedStatus =
+    !isRetrying &&
+    (statusLower === 'failed' ||
+      statusLower === 'error' ||
+      (!isInProgressStatus(statusLower) && (stepLower === 'failed' || stepLower === 'error')));
+
+  const hasTransientError =
+    codeErrorLines.length > 0 ||
+    generalFailLines.length > 0 ||
+    cleanError.length > 0 ||
     statusLower === 'failed' ||
     statusLower === 'error' ||
     stepLower === 'failed' ||
     stepLower === 'error';
 
-  const isFailedOrCancelled =
-    isRejected ||
-    isCancelled ||
-    isTimedOut ||
-    isFailedStatus ||
-    codeErrorLines.length > 0 ||
-    cleanError.length > 0;
-
-  const isMergedSuccess =
-    !isFailedOrCancelled &&
-    (statusLower === 'merged' || stepLower === 'merged' || hasMergedLog);
-
+  // 當 KV status 仍為進行中或重試中（且非明確最終拒絕/取消/逾時/失敗）時，
+  // 即使日誌中暫時出現單次編譯或測試錯誤，仍視為執行中（等待重試或完成），不可提早判定為最終失敗
   const isRunning =
-    !isFailedOrCancelled &&
-    !isMergedSuccess &&
-    (isInProgressStatus(statusLower) || statusLower === '');
+    !isRejected &&
+    !isCancelled &&
+    !isTimedOut &&
+    !isFailedStatus &&
+    (isRetrying || isInProgressStatus(statusLower) || statusLower === '');
+
+  const isFailedOrCancelled =
+    !isRunning &&
+    (isRejected ||
+      isCancelled ||
+      isTimedOut ||
+      isFailedStatus ||
+      codeErrorLines.length > 0 ||
+      cleanError.length > 0);
 
   const reasons: string[] = [];
   const pushReason = (r: string) => {
@@ -663,7 +764,13 @@ function analyzeKvLatestUpgrade(kv: KvLatestUpgradeSnapshot | null): KvUpgradeAn
   for (const line of rejectionLines) pushReason(line);
   for (const line of codeErrorLines) pushReason(line);
   for (const line of generalFailLines) pushReason(line);
-  if (isFailedOrCancelled && reasons.length === 0 && kv.step && !isInProgressStatus(kv.step) && stepLower !== 'merged') {
+  if (
+    (isFailedOrCancelled || hasTransientError) &&
+    reasons.length === 0 &&
+    kv.step &&
+    !isInProgressStatus(kv.step) &&
+    stepLower !== 'merged'
+  ) {
     pushReason(`停在階段：${kv.step}`);
   }
 
@@ -672,7 +779,6 @@ function analyzeKvLatestUpgrade(kv: KvLatestUpgradeSnapshot | null): KvUpgradeAn
   else if (isCancelled) verdict = 'cancelled';
   else if (isTimedOut) verdict = 'timed_out';
   else if (isFailedOrCancelled) verdict = 'failure';
-  else if (isMergedSuccess) verdict = 'success';
   else if (isRunning) verdict = 'running';
   else verdict = 'idle';
 
@@ -684,8 +790,10 @@ function analyzeKvLatestUpgrade(kv: KvLatestUpgradeSnapshot | null): KvUpgradeAn
     isCancelled,
     isTimedOut,
     isFailedOrCancelled,
-    isMergedSuccess,
+    isMergedSuccess: false,
     isRunning,
+    isRetrying,
+    hasTransientError,
     verdict,
     reasons: reasons.slice(0, 6),
   };
@@ -783,6 +891,7 @@ function createDefaultUpgradeTracking(): UpgradeTrackingState {
     repo: '',
     workflowFile: DEFAULT_WORKFLOW_FILE,
     runId: '',
+    runAttempt: 1,
     actionsUrl: '',
     prUrl: '',
     summary: '',
@@ -815,6 +924,7 @@ function sanitizeUpgradeTracking(raw: unknown): UpgradeTrackingState {
     repo: asTrimmedString(obj.repo) || parsedUrl.repo || '',
     workflowFile: asTrimmedString(obj.workflowFile) || parsedUrl.workflowFile || DEFAULT_WORKFLOW_FILE,
     runId: explicitRunId || parsedUrl.runId || '',
+    runAttempt: asPositiveInt(obj.runAttempt, 1),
     actionsUrl: rawActionsUrl,
     prUrl: asTrimmedString(obj.prUrl),
     summary: asTrimmedString(obj.summary),
@@ -1052,7 +1162,33 @@ function isInProgressStatus(status: string): boolean {
     lower === 'waiting' ||
     lower === 'pending' ||
     lower === 'requested' ||
-    lower === 'pr_created'
+    lower === 'pr_created' ||
+    lower === 'retrying' ||
+    lower === 'retry'
+  );
+}
+
+function isActionsRunActive(status: string): boolean {
+  const lower = status.trim().toLowerCase();
+  if (!lower) return false;
+  if (ACTIONS_ACTIVE_STATUSES.has(lower)) return true;
+  return (
+    lower !== 'completed' &&
+    lower !== 'idle' &&
+    lower !== 'unknown' &&
+    !ACTIONS_FAILURE_CONCLUSIONS.has(lower) &&
+    lower !== 'failed' &&
+    lower !== 'error' &&
+    lower !== 'rejected' &&
+    lower !== 'merged' &&
+    lower !== 'success'
+  );
+}
+
+function clearNonSuccessReportedRunKeys(reportedRunKeys: string[], keyPrefix: string): string[] {
+  if (!keyPrefix) return reportedRunKeys;
+  return reportedRunKeys.filter(
+    (k) => k === `${keyPrefix}:success` || (k !== keyPrefix && !k.startsWith(`${keyPrefix}:`))
   );
 }
 
@@ -1125,6 +1261,37 @@ function syncTrackingFromKvAndArgs(
   const explicitError = asTrimmedString(args.upgrade_error ?? args.error) || kvLatest?.error || '';
   const cleanExplicitError = isIgnorableLogAccessWarning(explicitError) ? '' : explicitError;
 
+  const rawAttemptArg = args.run_attempt ?? args.runAttempt ?? kvLatest?.runAttempt;
+  const candidateRunAttempt =
+    rawAttemptArg !== undefined && rawAttemptArg !== null && rawAttemptArg !== ''
+      ? asPositiveInt(rawAttemptArg, 1)
+      : 0;
+  const prevAttempt = track.runAttempt ?? 1;
+  const isRunAttemptIncremented = candidateRunAttempt > prevAttempt;
+
+  const kvCheck = analyzeKvLatestUpgrade(kvLatest);
+  const rawStatus =
+    asTrimmedString(args.upgrade_status ?? args.status) ||
+    kvLatest?.status ||
+    track.lastKnownStatus ||
+    'running';
+  const lowerStatus = rawStatus.toLowerCase();
+  const isRetryingOrActiveNow =
+    isRunAttemptIncremented ||
+    kvCheck.isRetrying ||
+    isInProgressStatus(lowerStatus);
+
+  if (isRunAttemptIncremented) {
+    track.runAttempt = candidateRunAttempt;
+    if (candidateRunId) {
+      track.reportedRunKeys = clearNonSuccessReportedRunKeys(track.reportedRunKeys, candidateRunId);
+    }
+    if (resolvedStartedAt) {
+      track.reportedRunKeys = clearNonSuccessReportedRunKeys(track.reportedRunKeys, resolvedStartedAt);
+    }
+    changed = true;
+  }
+
   const isAlreadyReportedForRun =
     candidateRunId !== '' && hasRunKeyBeenReported(track.reportedRunKeys, candidateRunId);
   const isAlreadyReportedForStart =
@@ -1132,8 +1299,8 @@ function syncTrackingFromKvAndArgs(
     resolvedStartedAt !== null &&
     hasRunKeyBeenReported(track.reportedRunKeys, resolvedStartedAt);
 
-  if (forceRegister && (isAlreadyReportedForRun || isAlreadyReportedForStart)) {
-    return { registered: false, alreadyReported: true, changed: false };
+  if (forceRegister && (isAlreadyReportedForRun || isAlreadyReportedForStart) && !isRetryingOrActiveNow) {
+    return { registered: false, alreadyReported: true, changed };
   }
 
   const isNewSpecificRun = candidateRunId !== '' && candidateRunId !== track.runId && !isAlreadyReportedForRun;
@@ -1143,11 +1310,21 @@ function syncTrackingFromKvAndArgs(
     kvLatest.startedAt !== track.startedAt &&
     !hasRunKeyBeenReported(track.reportedRunKeys, kvLatest.startedAt);
 
-  if (forceRegister || isNewSpecificRun || isNewStartSession || (!track.tracking && kvLatest && !isAlreadyReportedForRun && !isAlreadyReportedForStart)) {
+  if (
+    forceRegister ||
+    isNewSpecificRun ||
+    isNewStartSession ||
+    isRunAttemptIncremented ||
+    (!track.tracking && kvLatest && (!isAlreadyReportedForRun && !isAlreadyReportedForStart || isRetryingOrActiveNow))
+  ) {
     track.tracking = true;
     track.reported = false;
     track.reportedAt = null;
     track.lastKnownConclusion = null;
+    if (isNewSpecificRun || isNewStartSession) {
+      track.runAttempt = candidateRunAttempt > 0 ? candidateRunAttempt : 1;
+      track.lastKnownError = '';
+    }
     changed = true;
   }
 
@@ -1185,18 +1362,29 @@ function syncTrackingFromKvAndArgs(
   if (cleanExplicitError && track.lastKnownError !== cleanExplicitError) {
     track.lastKnownError = cleanExplicitError;
     changed = true;
+  } else if (!cleanExplicitError && (isRetryingOrActiveNow || kvCheck.isMergedSuccess) && track.lastKnownError !== '') {
+    track.lastKnownError = '';
+    changed = true;
   }
 
-  const rawStatus = asTrimmedString(args.upgrade_status ?? args.status) || kvLatest?.status || track.lastKnownStatus || 'running';
-  const lowerStatus = rawStatus.toLowerCase();
-  if (
+  if (kvCheck.isMergedSuccess || lowerStatus === 'merged' || lowerStatus === 'success') {
+    if (track.lastKnownStatus !== 'merged') {
+      track.lastKnownStatus = 'merged';
+      changed = true;
+    }
+  } else if (isRetryingOrActiveNow || (track.tracking && !track.reported && isInProgressStatus(rawStatus))) {
+    const nextInProgress = isInProgressStatus(rawStatus) ? rawStatus : 'running';
+    if (track.lastKnownStatus !== nextInProgress) {
+      track.lastKnownStatus = nextInProgress;
+      changed = true;
+    }
+  } else if (
     lowerStatus === 'rejected' ||
     lowerStatus === 'failed' ||
     lowerStatus === 'error' ||
     lowerStatus === 'cancelled' ||
     lowerStatus === 'canceled' ||
-    lowerStatus === 'timed_out' ||
-    lowerStatus === 'merged'
+    lowerStatus === 'timed_out'
   ) {
     if (track.lastKnownStatus !== lowerStatus) {
       track.lastKnownStatus = lowerStatus;
@@ -1227,6 +1415,9 @@ function extractUpgradeFailureDetails(jobsRaw: unknown): {
   for (const jobItem of jobs) {
     if (!jobItem || typeof jobItem !== 'object') continue;
     const job = jobItem as Record<string, unknown>;
+    const jobConclusion = asTrimmedString(job.conclusion).toLowerCase();
+    // 若該 job 已重試成功 (conclusion === 'success')，略過其中過程性的失敗步驟
+    if (jobConclusion === 'success') continue;
     const jobName = asTrimmedString(job.name) || 'Job';
 
     const rawFailedSteps = Array.isArray(job.failed_steps) ? job.failed_steps : [];
@@ -1433,6 +1624,108 @@ function buildUpgradeNotificationItem(params: {
   };
 }
 
+interface ActionsProgressInspection {
+  runStatus: string;
+  runConclusion: string;
+  runAttempt: number;
+  isAttemptUpdated: boolean;
+  isRunActive: boolean;
+  hasActiveJob: boolean;
+  hasActiveStep: boolean;
+  hasPriorFailedStepOrJob: boolean;
+  isRetryingOrInProgress: boolean;
+  isFullyCompleted: boolean;
+  isCompletedSuccess: boolean;
+  isCompletedFailure: boolean;
+}
+
+function inspectActionsProgress(
+  matchedRun: Record<string, unknown>,
+  jobsRaw: unknown,
+  prevRunAttempt: number
+): ActionsProgressInspection {
+  const runStatus = asTrimmedString(matchedRun.status).toLowerCase() || 'unknown';
+  const runConclusion = asTrimmedString(matchedRun.conclusion).toLowerCase() || '';
+  const rawRunAttempt = matchedRun.run_attempt ?? matchedRun.runAttempt;
+  let maxAttempt =
+    rawRunAttempt !== undefined && rawRunAttempt !== null && rawRunAttempt !== ''
+      ? asPositiveInt(rawRunAttempt, 1)
+      : 1;
+
+  let hasActiveJob = false;
+  let hasActiveStep = false;
+  let hasPriorFailedStepOrJob = false;
+
+  const jobs = Array.isArray(jobsRaw) ? jobsRaw : [];
+  for (const item of jobs) {
+    if (!item || typeof item !== 'object') continue;
+    const job = item as Record<string, unknown>;
+    const jobStatus = asTrimmedString(job.status).toLowerCase();
+    const jobConclusion = asTrimmedString(job.conclusion).toLowerCase();
+    const rawJobAttempt = job.run_attempt ?? job.runAttempt;
+    if (rawJobAttempt !== undefined && rawJobAttempt !== null && rawJobAttempt !== '') {
+      const parsedJobAttempt = asPositiveInt(rawJobAttempt, 1);
+      if (parsedJobAttempt > maxAttempt) {
+        maxAttempt = parsedJobAttempt;
+      }
+    }
+
+    if (isActionsRunActive(jobStatus)) {
+      hasActiveJob = true;
+    }
+    if (jobConclusion && ACTIONS_FAILURE_CONCLUSIONS.has(jobConclusion)) {
+      hasPriorFailedStepOrJob = true;
+    }
+
+    const runningSteps = Array.isArray(job.running_steps) ? job.running_steps : [];
+    if (runningSteps.length > 0) {
+      hasActiveStep = true;
+    }
+
+    const failedSteps = Array.isArray(job.failed_steps) ? job.failed_steps : [];
+    if (failedSteps.length > 0) {
+      hasPriorFailedStepOrJob = true;
+    }
+
+    const steps = Array.isArray(job.steps) ? job.steps : [];
+    for (const stItem of steps) {
+      if (!stItem || typeof stItem !== 'object') continue;
+      const st = stItem as Record<string, unknown>;
+      const stStatus = asTrimmedString(st.status).toLowerCase();
+      const stConclusion = asTrimmedString(st.conclusion).toLowerCase();
+      if (isActionsRunActive(stStatus)) {
+        hasActiveStep = true;
+      }
+      if (stConclusion && ACTIONS_FAILURE_CONCLUSIONS.has(stConclusion)) {
+        hasPriorFailedStepOrJob = true;
+      }
+    }
+  }
+
+  const isRunActive = isActionsRunActive(runStatus);
+  const isAttemptUpdated = maxAttempt > Math.max(1, prevRunAttempt);
+  const isRetryingOrInProgress = isRunActive || hasActiveJob || hasActiveStep;
+  const isFullyCompleted = runStatus === 'completed' && !hasActiveJob && !hasActiveStep;
+  const isCompletedSuccess = isFullyCompleted && runConclusion === 'success';
+  const isCompletedFailure =
+    isFullyCompleted && (ACTIONS_FAILURE_CONCLUSIONS.has(runConclusion) || runConclusion !== 'success');
+
+  return {
+    runStatus,
+    runConclusion,
+    runAttempt: maxAttempt,
+    isAttemptUpdated,
+    isRunActive,
+    hasActiveJob,
+    hasActiveStep,
+    hasPriorFailedStepOrJob,
+    isRetryingOrInProgress,
+    isFullyCompleted,
+    isCompletedSuccess,
+    isCompletedFailure,
+  };
+}
+
 async function checkTrackedUpgradeProgress(
   store: ProactiveUserStore,
   kvLatest: KvLatestUpgradeSnapshot | null,
@@ -1451,36 +1744,72 @@ async function checkTrackedUpgradeProgress(
 
   const kvAnalysis = analyzeKvLatestUpgrade(kvLatest);
   const explicitStatus = asTrimmedString(args.upgrade_status ?? args.status).toLowerCase();
-  const explicitErrorRaw = asTrimmedString(args.upgrade_error ?? args.error) || track.lastKnownError;
+  const explicitStep = asTrimmedString(args.upgrade_step ?? args.step).toLowerCase();
+  const explicitErrorRaw = asTrimmedString(args.upgrade_error ?? args.error);
   const cleanExplicitError = isIgnorableLogAccessWarning(explicitErrorRaw) ? '' : explicitErrorRaw;
 
-  const isExplicitRejected =
-    explicitStatus === 'rejected' ||
-    track.lastKnownStatus.toLowerCase() === 'rejected' ||
-    REJECTION_KEYWORD_PATTERN.test(cleanExplicitError);
-  const isExplicitCancelled =
-    explicitStatus === 'cancelled' ||
-    explicitStatus === 'canceled' ||
-    track.lastKnownStatus.toLowerCase() === 'cancelled' ||
-    track.lastKnownStatus.toLowerCase() === 'canceled';
-  const isExplicitTimedOut =
-    explicitStatus === 'timed_out' || track.lastKnownStatus.toLowerCase() === 'timed_out';
-  const isExplicitFailed =
-    isExplicitRejected ||
-    isExplicitCancelled ||
-    isExplicitTimedOut ||
-    explicitStatus === 'failed' ||
-    explicitStatus === 'error' ||
-    track.lastKnownStatus.toLowerCase() === 'failed' ||
-    track.lastKnownStatus.toLowerCase() === 'error';
+  const isExplicitMerged =
+    explicitStatus === 'merged' ||
+    explicitStatus === 'success' ||
+    explicitStep === 'merged' ||
+    explicitStep === 'success';
+  const isExplicitRunningOrRetrying =
+    isInProgressStatus(explicitStatus) ||
+    isInProgressStatus(explicitStep) ||
+    RETRY_SIGNAL_PATTERN.test(explicitStep);
 
-  const combinedKvFailed = kvAnalysis.isFailedOrCancelled || isExplicitFailed;
-  const combinedKvRejected = kvAnalysis.isRejected || isExplicitRejected;
-  const combinedKvCancelled = kvAnalysis.isCancelled || isExplicitCancelled;
-  const combinedKvTimedOut = kvAnalysis.isTimedOut || isExplicitTimedOut;
+  const isExplicitRejected =
+    !isExplicitMerged &&
+    !kvAnalysis.isMergedSuccess &&
+    (explicitStatus === 'rejected' ||
+      explicitStep === 'rejected' ||
+      (!isExplicitRunningOrRetrying && REJECTION_KEYWORD_PATTERN.test(cleanExplicitError)));
+  const isExplicitCancelled =
+    !isExplicitMerged &&
+    !kvAnalysis.isMergedSuccess &&
+    !isExplicitRunningOrRetrying &&
+    (explicitStatus === 'cancelled' ||
+      explicitStatus === 'canceled' ||
+      explicitStep === 'cancelled' ||
+      explicitStep === 'canceled');
+  const isExplicitTimedOut =
+    !isExplicitMerged &&
+    !kvAnalysis.isMergedSuccess &&
+    !isExplicitRunningOrRetrying &&
+    (explicitStatus === 'timed_out' || explicitStep === 'timed_out');
+  const isExplicitFailed =
+    !isExplicitMerged &&
+    !kvAnalysis.isMergedSuccess &&
+    !isExplicitRunningOrRetrying &&
+    (isExplicitRejected ||
+      isExplicitCancelled ||
+      isExplicitTimedOut ||
+      explicitStatus === 'failed' ||
+      explicitStatus === 'error' ||
+      explicitStep === 'failed' ||
+      explicitStep === 'error');
+
+  const combinedKvMerged = kvAnalysis.isMergedSuccess || isExplicitMerged;
+  const combinedKvRunningOrRetrying =
+    !combinedKvMerged && (kvAnalysis.isRunning || kvAnalysis.isRetrying || isExplicitRunningOrRetrying);
+  const combinedKvRejected = !combinedKvMerged && (kvAnalysis.isRejected || isExplicitRejected);
+  const combinedKvCancelled = !combinedKvMerged && (kvAnalysis.isCancelled || isExplicitCancelled);
+  const combinedKvTimedOut = !combinedKvMerged && (kvAnalysis.isTimedOut || isExplicitTimedOut);
+  const combinedKvFailed =
+    !combinedKvMerged &&
+    !combinedKvRunningOrRetrying &&
+    (kvAnalysis.isFailedOrCancelled || isExplicitFailed);
+
   const combinedKvReasons: string[] = [...kvAnalysis.reasons];
   if (cleanExplicitError && !combinedKvReasons.includes(cleanExplicitError)) {
     combinedKvReasons.unshift(cleanExplicitError);
+  }
+  if (
+    combinedKvReasons.length === 0 &&
+    track.lastKnownError &&
+    !isIgnorableLogAccessWarning(track.lastKnownError)
+  ) {
+    combinedKvReasons.push(track.lastKnownError);
   }
 
   const repo =
@@ -1506,37 +1835,72 @@ async function checkTrackedUpgradeProgress(
 
   // 驗證 GitHub Actions API 回傳是否成功，且是否對應本次任務而非舊歷史 run
   let matchedRun: Record<string, unknown> | null = null;
+  let hasOngoingActionsRunInRepo = false;
   const ghApiSucceeded = Boolean(ghRes && ghRes.ok === true && ghRes.run && typeof ghRes.run === 'object');
 
   if (ghApiSucceeded && ghRes) {
     const candidateRun = ghRes.run as Record<string, unknown>;
     const candidateRunId = String(candidateRun.id ?? '');
+    const candidateStatus = asTrimmedString(candidateRun.status).toLowerCase();
+    const candidateIsActive = isActionsRunActive(candidateStatus);
+    const rawCandidateAttempt = candidateRun.run_attempt ?? candidateRun.runAttempt;
+    const candidateAttempt =
+      rawCandidateAttempt !== undefined && rawCandidateAttempt !== null && rawCandidateAttempt !== ''
+        ? asPositiveInt(rawCandidateAttempt, 1)
+        : 1;
     const hadBoundRunId = track.runId !== '';
+
+    if (candidateIsActive) {
+      hasOngoingActionsRunInRepo = true;
+    } else if (Array.isArray(ghRes.recent_runs)) {
+      for (const rItem of ghRes.recent_runs) {
+        if (rItem && typeof rItem === 'object') {
+          const rStatus = asTrimmedString((rItem as Record<string, unknown>).status).toLowerCase();
+          if (isActionsRunActive(rStatus)) {
+            hasOngoingActionsRunInRepo = true;
+            break;
+          }
+        }
+      }
+    }
 
     if (hadBoundRunId && candidateRunId === track.runId) {
       matchedRun = candidateRun;
     } else if (!hadBoundRunId && candidateRunId) {
       const alreadyReportedThisId = hasRunKeyBeenReported(track.reportedRunKeys, candidateRunId);
-      const refStartStr = kvLatest?.startedAt || track.startedAt || '';
-      const refStartMs = refStartStr ? Date.parse(refStartStr) : Number.NaN;
-      const runUpdatedStr = asTrimmedString(candidateRun.updated_at) || asTrimmedString(candidateRun.created_at);
-      const runCreatedStr = asTrimmedString(candidateRun.created_at) || runUpdatedStr;
-      const runUpdatedMs = runUpdatedStr ? Date.parse(runUpdatedStr) : Number.NaN;
-      const runCreatedMs = runCreatedStr ? Date.parse(runCreatedStr) : Number.NaN;
+      const isRetryOfReportedRun =
+        alreadyReportedThisId && (candidateIsActive || candidateAttempt > (track.runAttempt ?? 1));
 
-      const isStaleHistoricalRun =
-        alreadyReportedThisId ||
-        (Number.isFinite(refStartMs) &&
-          ((Number.isFinite(runUpdatedMs) && runUpdatedMs < refStartMs - 60000) ||
-            (Number.isFinite(runCreatedMs) &&
-              asTrimmedString(candidateRun.status).toLowerCase() === 'completed' &&
-              runCreatedMs < refStartMs - 60000)));
-
-      if (!isStaleHistoricalRun) {
+      if (candidateIsActive && (!alreadyReportedThisId || isRetryOfReportedRun)) {
+        // 若該 workflow run 正處於 queued / in_progress / waiting / pending，代表正在執行或重試中，直接綁定
         matchedRun = candidateRun;
         track.runId = candidateRunId;
+        track.runAttempt = candidateAttempt;
         const htmlUrl = asTrimmedString(candidateRun.html_url);
         if (htmlUrl) track.actionsUrl = htmlUrl;
+      } else {
+        const refStartStr = kvLatest?.startedAt || track.startedAt || '';
+        const refStartMs = refStartStr ? Date.parse(refStartStr) : Number.NaN;
+        const runUpdatedStr = asTrimmedString(candidateRun.updated_at) || asTrimmedString(candidateRun.created_at);
+        const runCreatedStr = asTrimmedString(candidateRun.created_at) || runUpdatedStr;
+        const runUpdatedMs = runUpdatedStr ? Date.parse(runUpdatedStr) : Number.NaN;
+        const runCreatedMs = runCreatedStr ? Date.parse(runCreatedStr) : Number.NaN;
+
+        const isStaleHistoricalRun =
+          (alreadyReportedThisId && !isRetryOfReportedRun) ||
+          (Number.isFinite(refStartMs) &&
+            ((Number.isFinite(runUpdatedMs) && runUpdatedMs < refStartMs - 60000) ||
+              (Number.isFinite(runCreatedMs) &&
+                candidateStatus === 'completed' &&
+                runCreatedMs < refStartMs - 60000)));
+
+        if (!isStaleHistoricalRun) {
+          matchedRun = candidateRun;
+          track.runId = candidateRunId;
+          track.runAttempt = candidateAttempt;
+          const htmlUrl = asTrimmedString(candidateRun.html_url);
+          if (htmlUrl) track.actionsUrl = htmlUrl;
+        }
       }
     } else if (candidateRunId) {
       matchedRun = candidateRun;
@@ -1544,9 +1908,56 @@ async function checkTrackedUpgradeProgress(
   }
 
   // 降級容錯分支：當 GitHub Actions API 查詢失敗 (ok: false 或 HTTP 403 rate limit) 或尚未抓到對應新 run 時
-  // 絕對不可誤報升級失敗，僅依據 KV latest_upgrade 判斷；若 KV 仍為 running 則維持進行中等待下次 check_due
   if (!matchedRun) {
-    if (combinedKvFailed) {
+    // 若倉庫中仍有正在執行的 workflow run，或 KV 顯示正在執行/重試中，維持追蹤等待
+    if (hasOngoingActionsRunInRepo || combinedKvRunningOrRetrying) {
+      return { notification: null, changed };
+    }
+
+    if (combinedKvMerged) {
+      const keyBase = track.runId || track.startedAt || 'latest';
+      const reportKey = `${keyBase}:success`;
+      if (track.reportedRunKeys.includes(reportKey) || (track.runId && hasRunKeyBeenReported(track.reportedRunKeys, track.runId))) {
+        track.tracking = false;
+        track.reported = true;
+        return { notification: null, changed: true };
+      }
+
+      const summaryLabel = track.summary || kvLatest?.summary || kvLatest?.request || '自我升級任務';
+      const runNumberLabel = track.runId ? `#${track.runId}` : '';
+
+      track.tracking = false;
+      track.reported = true;
+      track.lastKnownStatus = 'completed';
+      track.lastKnownConclusion = 'success';
+      track.lastKnownError = '';
+      track.reportedAt = nowIso;
+      track.reportedRunKeys.push(reportKey);
+
+      return {
+        notification: buildUpgradeNotificationItem({
+          verdict: 'success',
+          isSuccess: true,
+          isRejected: false,
+          runId: track.runId,
+          runNumberLabel,
+          runStatus: 'merged',
+          runConclusion: 'success',
+          actionsUrl: track.actionsUrl,
+          prUrl: track.prUrl,
+          summaryLabel,
+          failedSteps: [],
+          annotationsSummary: [],
+          errorReasons: [],
+          nowIso,
+          nowMs,
+        }),
+        changed: true,
+      };
+    }
+
+    // 僅當確認為不可重試的最終拒絕（rejected）且無進行中任務，或 GitHub API 無法存取（403/降級）且 KV 已明確處於最終結束失敗狀態時，才發送失敗通知
+    if (combinedKvRejected || (!ghApiSucceeded && combinedKvFailed)) {
       const fallbackVerdict = combinedKvRejected
         ? 'rejected'
         : combinedKvCancelled
@@ -1594,55 +2005,12 @@ async function checkTrackedUpgradeProgress(
       };
     }
 
-    if (kvAnalysis.isMergedSuccess) {
-      const keyBase = track.runId || track.startedAt || 'latest';
-      const reportKey = `${keyBase}:success`;
-      if (track.reportedRunKeys.includes(reportKey) || (track.runId && hasRunKeyBeenReported(track.reportedRunKeys, track.runId))) {
-        track.tracking = false;
-        track.reported = true;
-        return { notification: null, changed: true };
-      }
-
-      const summaryLabel = track.summary || kvLatest?.summary || kvLatest?.request || '自我升級任務';
-      const runNumberLabel = track.runId ? `#${track.runId}` : '';
-
-      track.tracking = false;
-      track.reported = true;
-      track.lastKnownStatus = 'completed';
-      track.lastKnownConclusion = 'success';
-      track.reportedAt = nowIso;
-      track.reportedRunKeys.push(reportKey);
-
-      return {
-        notification: buildUpgradeNotificationItem({
-          verdict: 'success',
-          isSuccess: true,
-          isRejected: false,
-          runId: track.runId,
-          runNumberLabel,
-          runStatus: 'merged',
-          runConclusion: 'success',
-          actionsUrl: track.actionsUrl,
-          prUrl: track.prUrl,
-          summaryLabel,
-          failedSteps: [],
-          annotationsSummary: [],
-          errorReasons: [],
-          nowIso,
-          nowMs,
-        }),
-        changed: true,
-      };
-    }
-
-    // KV 仍為 running 或尚無結束狀態：維持進行中，等待下次 check_due
+    // 尚無結束狀態或仍在等待對應 GitHub Actions run 完成：維持進行中，等待下次 check_due
     return { notification: null, changed };
   }
 
   // 雙源交叉校準分支：已取得對應本次任務的 GitHub Actions Run
   const runId = String(matchedRun.id ?? track.runId ?? '');
-  const runStatus = asTrimmedString(matchedRun.status).toLowerCase() || 'unknown';
-  const runConclusion = asTrimmedString(matchedRun.conclusion).toLowerCase() || '';
   const runHtmlUrl = asTrimmedString(matchedRun.html_url) || track.actionsUrl;
   const runNumberLabel =
     typeof matchedRun.run_number === 'number'
@@ -1656,29 +2024,64 @@ async function checkTrackedUpgradeProgress(
   if (runId) track.runId = runId;
   if (runHtmlUrl) track.actionsUrl = runHtmlUrl;
 
-  const isActionsCompleted = runStatus === 'completed';
-  const isActionsFailedOrCancelled =
-    isActionsCompleted && (ACTIONS_FAILURE_CONCLUSIONS.has(runConclusion) || runConclusion !== 'success');
-  const isActionsSuccess = isActionsCompleted && runConclusion === 'success';
+  const inspection = inspectActionsProgress(matchedRun, ghRes?.jobs, track.runAttempt ?? 1);
+  const { runStatus, runConclusion } = inspection;
 
-  // 若 Actions 尚未 completed，且 KV 也未出現失敗/拒絕/取消或明確 merged，則維持進行中
-  if (!isActionsCompleted && !combinedKvFailed && !kvAnalysis.isMergedSuccess) {
-    track.lastKnownStatus = runStatus || 'in_progress';
-    track.lastKnownConclusion = runConclusion || null;
+  if (inspection.isAttemptUpdated) {
+    track.runAttempt = inspection.runAttempt;
+    track.lastKnownConclusion = null;
+    track.lastKnownError = '';
+    if (runId) {
+      track.reportedRunKeys = clearNonSuccessReportedRunKeys(track.reportedRunKeys, runId);
+    }
+  } else if (inspection.runAttempt > (track.runAttempt ?? 1)) {
+    track.runAttempt = inspection.runAttempt;
+  }
+
+  // 【核心規則 1 & 2】：
+  // 若 GitHub Actions workflow run 的狀態仍為 queued、in_progress、waiting 或 pending（代表正在重試或執行中），
+  // 或檢查到仍有步驟/job 處於執行中或重試迴圈中，
+  // 即使 KV latest_upgrade 暫時出現錯誤日誌或單次失敗紀錄、或曾有 job/step 失敗，
+  // 亦不可提早判定為最終失敗，不可觸發失敗通知或寫入 reportedRunKeys，應繼續維持追蹤等待。
+  if (inspection.isRetryingOrInProgress) {
+    track.tracking = true;
+    track.reported = false;
+    track.lastKnownStatus = inspection.isRunActive ? runStatus : 'in_progress';
+    track.lastKnownConclusion = null;
+    if (runId) {
+      track.reportedRunKeys = clearNonSuccessReportedRunKeys(track.reportedRunKeys, runId);
+    }
     return { notification: null, changed: true };
   }
 
-  const extracted =
-    isActionsSuccess && !combinedKvFailed
-      ? { failedSteps: [], annotationsSummary: [], errorReasons: [], isRejected: false }
-      : extractUpgradeFailureDetails(ghRes?.jobs);
+  // 【核心規則 3】：
+  // 僅當 GitHub Actions workflow run 已完全結束（status === 'completed' 且無進行中 job/step）時，才進行最終判定。
+  const isActionsSuccess = inspection.isCompletedSuccess;
+  const isActionsFailedOrCancelled = inspection.isCompletedFailure;
 
-  const isRejected = combinedKvRejected || (isActionsFailedOrCancelled && extracted.isRejected);
+  const isExplicitOrKvStatusRejected =
+    !combinedKvMerged &&
+    (kvAnalysis.statusLower === 'rejected' ||
+      kvAnalysis.stepLower === 'rejected' ||
+      explicitStatus === 'rejected' ||
+      explicitStep === 'rejected');
+
+  // 若重試後最終成功（Actions conclusion === 'success' 或 KV 已 merged），只要非不可重試的明確最終 rejected，即正常回報升級成功
+  const isConfirmedTerminalRejected =
+    isExplicitOrKvStatusRejected ||
+    (!combinedKvMerged &&
+      !isActionsSuccess &&
+      (combinedKvRejected || (isActionsFailedOrCancelled && extractUpgradeFailureDetails(ghRes?.jobs).isRejected)));
+
   const isSuccess =
-    !combinedKvFailed &&
-    !isRejected &&
-    !isActionsFailedOrCancelled &&
-    (isActionsSuccess || kvAnalysis.isMergedSuccess);
+    !isConfirmedTerminalRejected &&
+    (isActionsSuccess || (combinedKvMerged && !isActionsFailedOrCancelled));
+
+  const extracted = isSuccess
+    ? { failedSteps: [], annotationsSummary: [], errorReasons: [], isRejected: false }
+    : extractUpgradeFailureDetails(ghRes?.jobs);
+
+  const isRejected = !isSuccess && (isConfirmedTerminalRejected || combinedKvRejected || (isActionsFailedOrCancelled && extracted.isRejected));
 
   let verdict: string;
   if (isSuccess) {
@@ -1701,17 +2104,23 @@ async function checkTrackedUpgradeProgress(
 
   const keyBase = runId || track.startedAt || 'latest';
   const reportKey = `${keyBase}:${verdict}`;
-  if (track.reportedRunKeys.includes(reportKey) || (runId && hasRunKeyBeenReported(track.reportedRunKeys, runId))) {
+  if (
+    track.reportedRunKeys.includes(reportKey) ||
+    (runId && track.reportedRunKeys.includes(`${runId}:success`)) ||
+    (runId && !isSuccess && hasRunKeyBeenReported(track.reportedRunKeys, runId))
+  ) {
     track.tracking = false;
     track.reported = true;
     return { notification: null, changed: true };
   }
 
   const mergedErrorReasons: string[] = [];
-  for (const r of [...combinedKvReasons, ...extracted.errorReasons]) {
-    const trimmed = r.trim();
-    if (trimmed && !isIgnorableLogAccessWarning(trimmed) && !mergedErrorReasons.includes(trimmed)) {
-      mergedErrorReasons.push(trimmed);
+  if (!isSuccess) {
+    for (const r of [...combinedKvReasons, ...extracted.errorReasons]) {
+      const trimmed = r.trim();
+      if (trimmed && !isIgnorableLogAccessWarning(trimmed) && !mergedErrorReasons.includes(trimmed)) {
+        mergedErrorReasons.push(trimmed);
+      }
     }
   }
 
@@ -1720,7 +2129,10 @@ async function checkTrackedUpgradeProgress(
   track.tracking = false;
   track.reported = true;
   track.lastKnownStatus = isSuccess ? 'completed' : verdict;
-  track.lastKnownConclusion = runConclusion || verdict;
+  track.lastKnownConclusion = isSuccess ? 'success' : runConclusion || verdict;
+  if (isSuccess) {
+    track.lastKnownError = '';
+  }
   track.reportedAt = nowIso;
   track.reportedRunKeys.push(reportKey);
 
@@ -1731,7 +2143,7 @@ async function checkTrackedUpgradeProgress(
     runId,
     runNumberLabel,
     runStatus,
-    runConclusion: runConclusion || verdict,
+    runConclusion: isSuccess ? 'success' : runConclusion || verdict,
     actionsUrl: runHtmlUrl,
     prUrl: track.prUrl,
     summaryLabel,
@@ -1749,7 +2161,7 @@ export const proactiveMessagesPlugin: PluginTool = {
   declaration: {
     name: 'manage_proactive_messages',
     description:
-      '管理桌寵的主動訊息、定時提醒、閒置關懷排程，以及自我升級（KV latest_upgrade 與 GitHub Actions self-upgrade-runner.yml 雙源交叉校準）的完成/失敗/取消主動回報追蹤。支援新增排程(add)、列出所有排程與升級追蹤狀態(list)、啟用或停用排程/總開關(toggle)、切換 AI 隨機生成(toggle_ai)、刪除排程(delete)、登記追蹤自我升級任務(track_upgrade，會自動從 latest_upgrade.actions_url 解析並綁定具體 run_id 與 started_at)、以及檢查到期主動訊息與升級結果(check_due，雙源交叉校準 KV latest_upgrade 與 GitHub Actions Run/Job API，遇到 403/rate limit 自動降級容錯，並以 reportedRunKeys 防止重複通知)。',
+      '管理桌寵的主動訊息、定時提醒、閒置關懷排程，以及自我升級（KV latest_upgrade 與 GitHub Actions self-upgrade-runner.yml 雙源交叉校準，支援 retry 重試機制）的完成/失敗/取消主動回報追蹤。支援新增排程(add)、列出所有排程與升級追蹤狀態(list)、啟用或停用排程/總開關(toggle)、切換 AI 隨機生成(toggle_ai)、刪除排程(delete)、登記追蹤自我升級任務(track_upgrade，會自動從 latest_upgrade.actions_url 解析並綁定具體 run_id、run_attempt 與 started_at)、以及檢查到期主動訊息與升級結果(check_due，雙源交叉校準 KV latest_upgrade 與 GitHub Actions Run/Job API，當 workflow 仍處於 queued/in_progress/waiting/pending 或重試中時持續等待不提早誤判失敗，遇到 403/rate limit 自動降級容錯，並以 reportedRunKeys 防止重複通知)。',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -1816,6 +2228,10 @@ export const proactiveMessagesPlugin: PluginTool = {
         run_id: {
           type: 'STRING',
           description: '欲追蹤或檢查的 GitHub Actions Run ID。',
+        },
+        run_attempt: {
+          type: 'STRING',
+          description: '選填，GitHub Actions Workflow Run 的重試次數 (run_attempt，正整數如 1、2)。',
         },
         pr_url: {
           type: 'STRING',
