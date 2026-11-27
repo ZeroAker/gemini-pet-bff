@@ -640,7 +640,125 @@ export const UI_STYLES: string = `
       min-width: 60px;
     }
     .bubble.has-time { padding-bottom: 7px; }
-    .bubble-text { white-space: pre-wrap; word-break: break-word; }
+    .bubble-text {
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      line-height: 1.56;
+    }
+    .bubble-text strong {
+      font-weight: 700;
+    }
+    .msg.bot .bubble-text strong {
+      color: #ffffff;
+    }
+    .msg.user .bubble-text strong {
+      color: #fff9db;
+    }
+    .bubble-text em {
+      font-style: italic;
+    }
+    .msg.bot .bubble-text em {
+      color: #dfe6ff;
+    }
+    .bubble-text code,
+    .bubble-text .md-inline-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.88em;
+      padding: 2px 6px;
+      border-radius: 5px;
+      word-break: break-word;
+    }
+    .msg.bot .bubble-text code,
+    .msg.bot .bubble-text .md-inline-code {
+      background: rgba(11, 13, 20, 0.75);
+      color: #ffeaa7;
+      border: 1px solid rgba(162, 155, 254, 0.3);
+    }
+    .msg.user .bubble-text code,
+    .msg.user .bubble-text .md-inline-code {
+      background: rgba(15, 17, 26, 0.38);
+      color: #fff3bf;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+    }
+    .bubble-text pre.md-code-block {
+      margin: 6px 0;
+      padding: 9px 11px;
+      border-radius: 9px;
+      background: #0d101b;
+      border: 1px solid #2b324d;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.45;
+    }
+    .bubble-text pre.md-code-block:first-child { margin-top: 2px; }
+    .bubble-text pre.md-code-block:last-child { margin-bottom: 2px; }
+    .bubble-text pre.md-code-block code {
+      background: transparent;
+      border: none;
+      padding: 0;
+      color: #e2e8f0;
+      font-size: 13px;
+    }
+    .msg.user .bubble-text pre.md-code-block {
+      background: rgba(11, 13, 22, 0.52);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+    .msg.user .bubble-text pre.md-code-block code {
+      color: #f8fafc;
+    }
+    .bubble-text .md-heading {
+      font-weight: 700;
+      line-height: 1.35;
+      margin: 6px 0 4px 0;
+    }
+    .bubble-text .md-heading:first-child { margin-top: 0; }
+    .bubble-text .md-heading:last-child { margin-bottom: 0; }
+    .bubble-text .md-h1 {
+      font-size: 1.18em;
+      padding-bottom: 3px;
+      border-bottom: 1px solid rgba(162, 155, 254, 0.28);
+    }
+    .bubble-text .md-h2 {
+      font-size: 1.1em;
+    }
+    .bubble-text .md-h3 {
+      font-size: 1.03em;
+    }
+    .msg.bot .bubble-text .md-heading {
+      color: #ffffff;
+    }
+    .msg.user .bubble-text .md-heading {
+      color: #ffffff;
+      border-bottom-color: rgba(255, 255, 255, 0.28);
+    }
+    .bubble-text ul.md-list {
+      margin: 5px 0;
+      padding-left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .bubble-text ul.md-list:first-child { margin-top: 0; }
+    .bubble-text ul.md-list:last-child { margin-bottom: 0; }
+    .bubble-text li.md-list-item {
+      line-height: 1.5;
+    }
+    .msg.bot .bubble-text li.md-list-item::marker {
+      color: #a29bfe;
+    }
+    .msg.user .bubble-text li.md-list-item::marker {
+      color: rgba(255, 255, 255, 0.85);
+    }
+    .bubble-text hr.md-hr {
+      border: none;
+      border-top: 1px solid rgba(154, 163, 189, 0.28);
+      margin: 8px 0;
+    }
+    .msg.user .bubble-text hr.md-hr {
+      border-top-color: rgba(255, 255, 255, 0.3);
+    }
     .bubble-time {
       font-size: 11px;
       line-height: 1.1;
