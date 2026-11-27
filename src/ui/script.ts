@@ -144,27 +144,64 @@ export const UI_SCRIPT: string = `
       return hh + ':' + mm;
     }
 
-    function renderMessage(role, text, metaText, timestamp) {
+    function buildStickerNode(stickerObj) {
+      var box = document.createElement('div');
+      box.className = 'sticker-standalone';
+      var img = document.createElement('img');
+      img.className = 'chat-sticker-img';
+      img.src = stickerObj.url;
+      img.alt = stickerObj.label || stickerObj.id || '貼圖';
+      img.loading = 'lazy';
+      img.onerror = function () {
+        var badge = document.createElement('div');
+        badge.className = 'chat-sticker-fallback';
+        badge.textContent = '[🎭 ' + (stickerObj.label || stickerObj.id || '貼圖') + ']';
+        if (img.parentNode) {
+          img.parentNode.replaceChild(badge, img);
+        }
+      };
+      box.appendChild(img);
+      return box;
+    }
+
+    function renderMessage(role, text, metaText, timestamp, stickerObj) {
       var wrap = document.createElement('div');
       wrap.className = 'msg ' + role;
-      var bubble = document.createElement('div');
-      bubble.className = 'bubble';
-
-      var textEl = document.createElement('div');
-      textEl.className = 'bubble-text';
-      textEl.textContent = text;
-      bubble.appendChild(textEl);
-
+      var hasText = typeof text === 'string' && text.length > 0;
+      var hasSticker = Boolean(stickerObj && stickerObj.url);
       var timeStr = formatTime(timestamp);
-      if (timeStr) {
-        bubble.classList.add('has-time');
-        var timeEl = document.createElement('div');
-        timeEl.className = 'bubble-time';
-        timeEl.textContent = timeStr;
-        bubble.appendChild(timeEl);
+
+      if (hasSticker) {
+        var stickerNode = buildStickerNode(stickerObj);
+        if (!hasText && timeStr) {
+          var stTimeEl = document.createElement('div');
+          stTimeEl.className = 'sticker-only-time';
+          stTimeEl.textContent = timeStr;
+          stickerNode.appendChild(stTimeEl);
+        }
+        wrap.appendChild(stickerNode);
       }
 
-      wrap.appendChild(bubble);
+      if (hasText || !hasSticker) {
+        var bubble = document.createElement('div');
+        bubble.className = 'bubble';
+
+        var textEl = document.createElement('div');
+        textEl.className = 'bubble-text';
+        textEl.textContent = text || '';
+        bubble.appendChild(textEl);
+
+        if (timeStr) {
+          bubble.classList.add('has-time');
+          var timeEl = document.createElement('div');
+          timeEl.className = 'bubble-time';
+          timeEl.textContent = timeStr;
+          bubble.appendChild(timeEl);
+        }
+
+        wrap.appendChild(bubble);
+      }
+
       if (metaText) {
         var meta = document.createElement('div');
         meta.className = 'meta';
@@ -205,8 +242,15 @@ export const UI_SCRIPT: string = `
     };
 
     // ==================== [CHAT_API] ====================
-    async function sendInteractionRequest(contentText, contextLabel) {
+    async function sendInteractionRequest(contentText, contextLabel, stickerId) {
       var cfg = getConfig();
+      var inputPayload = {
+        type: stickerId ? 'sticker' : 'text',
+        content: contentText || ''
+      };
+      if (stickerId) {
+        inputPayload.sticker_id = stickerId;
+      }
       var res = await fetch('/v1/pet/interact', {
         method: 'POST',
         headers: {
@@ -219,18 +263,16 @@ export const UI_SCRIPT: string = `
             platform: detectPlatform(),
             context: contextLabel || 'PWA 專屬介面'
           },
-          input: {
-            type: 'text',
-            content: contentText
-          }
+          input: inputPayload
         })
       });
       return await res.json();
     }
 
-    async function sendMessage() {
+    async function sendMessage(overrideStickerObj) {
       var text = inputEl.value.trim();
-      if (!text) return;
+      var chosenSticker = overrideStickerObj || pendingAttachedSticker || null;
+      if (!text && !chosenSticker) return;
 
       var cfg = getConfig();
       if (!cfg.token) {
@@ -241,22 +283,32 @@ export const UI_SCRIPT: string = `
       markUserActivity();
       inputEl.value = '';
       inputEl.style.height = 'auto';
+      clearPendingSticker();
+      if (stickerDrawerEl) stickerDrawerEl.style.display = 'none';
       sendBtn.disabled = true;
 
+      if (chosenSticker && chosenSticker.id) {
+        recordRecentSticker(chosenSticker.id);
+      }
+
       var userTime = Date.now();
+      var userStickerLog = chosenSticker
+        ? { id: chosenSticker.id, url: chosenSticker.url, label: chosenSticker.label }
+        : null;
       var log = loadLocalLog();
-      log.push({ role: 'user', text: text, meta: '', time: userTime });
+      log.push({ role: 'user', text: text, meta: '', time: userTime, sticker: userStickerLog });
       saveLocalLog(log);
-      renderMessage('user', text, '', userTime);
+      renderMessage('user', text, '', userTime, userStickerLog);
 
       var loadingEl = renderMessage('bot', '思考中...', '', null);
       setPetMood('thinking');
 
       try {
-        var data = await sendInteractionRequest(text, 'PWA 專屬介面');
+        var data = await sendInteractionRequest(text, 'PWA 專屬介面', chosenSticker ? chosenSticker.id : '');
         loadingEl.remove();
 
-        var reply = data.reply || JSON.stringify(data);
+        var botSticker = (data && data.sticker && data.sticker.url) ? data.sticker : null;
+        var reply = (typeof data.reply === 'string') ? data.reply : (botSticker ? '' : JSON.stringify(data));
         var emotion = (data.action && data.action.emotion) ? data.action.emotion : 'idle';
         setPetMood(emotion);
         triggerAvatarBounce();
@@ -300,15 +352,17 @@ export const UI_SCRIPT: string = `
 
         var botTime = Date.now();
         var updatedLog = loadLocalLog();
-        updatedLog.push({ role: 'bot', text: reply, meta: metaStr, time: botTime });
+        updatedLog.push({ role: 'bot', text: reply, meta: metaStr, time: botTime, sticker: botSticker });
         saveLocalLog(updatedLog);
-        renderMessage('bot', reply, metaStr, botTime);
+        renderMessage('bot', reply, metaStr, botTime, botSticker);
       } catch (err) {
         loadingEl.remove();
         renderMessage('bot', '⚠️ 連線失敗：' + err.message, '', Date.now());
       } finally {
         sendBtn.disabled = false;
-        inputEl.focus();
+        if (!isMobileTouchDevice()) {
+          inputEl.focus();
+        }
       }
     }
 
@@ -674,7 +728,9 @@ export const UI_SCRIPT: string = `
     };
 
     upgradeBtnEl.onclick = toggleLogCabin;
-    sendBtn.onclick = sendMessage;
+    sendBtn.onclick = function () {
+      sendMessage();
+    };
     inputEl.addEventListener('input', function () {
       markUserActivity();
       this.style.height = 'auto';
@@ -709,7 +765,7 @@ export const UI_SCRIPT: string = `
       renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天或點「🎮 餵食與遊戲」陪我玩囉！', '', Date.now());
     } else {
       initialLog.forEach(function (item) {
-        renderMessage(item.role, item.text, item.meta, item.time);
+        renderMessage(item.role, item.text, item.meta, item.time, item.sticker || null);
       });
     }
 
@@ -2538,6 +2594,211 @@ export const UI_SCRIPT: string = `
 
     // 保留 petStageEl 供未來 3D 桌寵模型掛載使用
     window.petStageElement = petStageEl;
+
+    // ==================== [STICKERS] ====================
+    var STICKER_PACK_CACHE_KEY = 'pet_sticker_pack_v1';
+    var RECENT_STICKERS_KEY = 'pet_recent_stickers_v1';
+    var stickerBtnEl = document.getElementById('stickerBtn');
+    var stickerDrawerEl = document.getElementById('stickerDrawer');
+    var closeStickerDrawerBtnEl = document.getElementById('closeStickerDrawerBtn');
+    var stickerTabsEl = document.getElementById('stickerTabs');
+    var stickerRecentRowEl = document.getElementById('stickerRecentRow');
+    var stickerGridEl = document.getElementById('stickerGrid');
+    var stickerAttachBarEl = document.getElementById('stickerAttachBar');
+    var stickerAttachThumbEl = document.getElementById('stickerAttachThumb');
+    var stickerAttachLabelEl = document.getElementById('stickerAttachLabel');
+    var clearAttachedStickerBtnEl = document.getElementById('clearAttachedStickerBtn');
+
+    var availableStickers = [];
+    var activeStickerCategory = '全部';
+    var pendingAttachedSticker = null;
+
+    function clearPendingSticker() {
+      pendingAttachedSticker = null;
+      if (stickerAttachBarEl) {
+        stickerAttachBarEl.style.display = 'none';
+      }
+    }
+
+    function setPendingSticker(st) {
+      pendingAttachedSticker = st;
+      if (stickerAttachBarEl && stickerAttachThumbEl && stickerAttachLabelEl) {
+        stickerAttachThumbEl.src = st.url;
+        stickerAttachThumbEl.alt = st.label;
+        stickerAttachLabelEl.textContent = '已附加貼圖：' + st.label + '（按傳送將與文字一併送出）';
+        stickerAttachBarEl.style.display = 'flex';
+      }
+    }
+
+    function loadRecentStickerIds() {
+      try {
+        var arr = JSON.parse(localStorage.getItem(RECENT_STICKERS_KEY) || '[]');
+        return Array.isArray(arr) ? arr : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function recordRecentSticker(id) {
+      var list = loadRecentStickerIds().filter(function (x) { return x !== id; });
+      list.unshift(id);
+      localStorage.setItem(RECENT_STICKERS_KEY, JSON.stringify(list.slice(0, 6)));
+      renderRecentStickers();
+    }
+
+    function handleStickerPick(st) {
+      markUserActivity();
+      if (inputEl.value.trim().length > 0) {
+        setPendingSticker(st);
+        if (stickerDrawerEl) stickerDrawerEl.style.display = 'none';
+      } else {
+        sendMessage(st);
+      }
+    }
+
+    function renderRecentStickers() {
+      if (!stickerRecentRowEl) return;
+      var ids = loadRecentStickerIds();
+      var matched = [];
+      ids.forEach(function (id) {
+        for (var i = 0; i < availableStickers.length; i++) {
+          if (availableStickers[i].id === id) {
+            matched.push(availableStickers[i]);
+            break;
+          }
+        }
+      });
+      if (matched.length === 0) {
+        stickerRecentRowEl.style.display = 'none';
+        return;
+      }
+      stickerRecentRowEl.style.display = 'flex';
+      stickerRecentRowEl.innerHTML = '';
+      var tag = document.createElement('span');
+      tag.className = 'sticker-recent-tag';
+      tag.textContent = '最近：';
+      stickerRecentRowEl.appendChild(tag);
+      matched.forEach(function (st) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sticker-recent-btn';
+        btn.title = st.label;
+        var img = document.createElement('img');
+        img.src = st.url;
+        img.alt = st.label;
+        btn.appendChild(img);
+        btn.onclick = function () { handleStickerPick(st); };
+        stickerRecentRowEl.appendChild(btn);
+      });
+    }
+
+    function renderStickerDrawer() {
+      if (!stickerGridEl || !stickerTabsEl) return;
+
+      var categories = ['全部'];
+      availableStickers.forEach(function (st) {
+        var cat = st.category || '日常';
+        if (categories.indexOf(cat) === -1) categories.push(cat);
+      });
+
+      stickerTabsEl.innerHTML = '';
+      if (categories.length > 2 || availableStickers.length > 8) {
+        categories.forEach(function (cat) {
+          var tab = document.createElement('button');
+          tab.type = 'button';
+          tab.className = 'sticker-tab' + (activeStickerCategory === cat ? ' active' : '');
+          tab.textContent = cat;
+          tab.onclick = function () {
+            activeStickerCategory = cat;
+            renderStickerDrawer();
+          };
+          stickerTabsEl.appendChild(tab);
+        });
+      } else {
+        activeStickerCategory = '全部';
+        var titleSpan = document.createElement('span');
+        titleSpan.style.fontSize = '12px';
+        titleSpan.style.color = '#9aa3bd';
+        titleSpan.textContent = '🎭 點擊貼圖立即傳送（有打字則附加）';
+        stickerTabsEl.appendChild(titleSpan);
+      }
+
+      renderRecentStickers();
+
+      stickerGridEl.innerHTML = '';
+      var filtered = availableStickers.filter(function (st) {
+        return activeStickerCategory === '全部' || (st.category || '日常') === activeStickerCategory;
+      });
+
+      if (filtered.length === 0) {
+        var emptyEl = document.createElement('div');
+        emptyEl.style.fontSize = '12px';
+        emptyEl.style.color = '#8c96b2';
+        emptyEl.textContent = '尚未載入任何貼圖';
+        stickerGridEl.appendChild(emptyEl);
+        return;
+      }
+
+      filtered.forEach(function (st) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sticker-item';
+        var img = document.createElement('img');
+        img.src = st.url;
+        img.alt = st.label;
+        img.loading = 'lazy';
+        var label = document.createElement('span');
+        label.textContent = st.label;
+        btn.appendChild(img);
+        btn.appendChild(label);
+        btn.onclick = function () { handleStickerPick(st); };
+        stickerGridEl.appendChild(btn);
+      });
+    }
+
+    async function loadStickerPack() {
+      try {
+        var cached = JSON.parse(localStorage.getItem(STICKER_PACK_CACHE_KEY) || '[]');
+        if (Array.isArray(cached) && cached.length > 0) {
+          availableStickers = cached;
+          renderStickerDrawer();
+        }
+      } catch (e) {}
+
+      try {
+        var res = await fetch('/v1/stickers');
+        var data = await res.json();
+        if (data && data.ok && Array.isArray(data.stickers)) {
+          availableStickers = data.stickers;
+          localStorage.setItem(STICKER_PACK_CACHE_KEY, JSON.stringify(availableStickers));
+          renderStickerDrawer();
+        }
+      } catch (e) {}
+    }
+
+    if (stickerBtnEl) {
+      stickerBtnEl.onclick = function () {
+        if (!stickerDrawerEl) return;
+        var willOpen = stickerDrawerEl.style.display === 'none';
+        stickerDrawerEl.style.display = willOpen ? 'flex' : 'none';
+        if (willOpen) {
+          inputEl.blur();
+          if (availableStickers.length === 0) {
+            loadStickerPack();
+          }
+        }
+      };
+    }
+    if (closeStickerDrawerBtnEl) {
+      closeStickerDrawerBtnEl.onclick = function () {
+        if (stickerDrawerEl) stickerDrawerEl.style.display = 'none';
+      };
+    }
+    if (clearAttachedStickerBtnEl) {
+      clearAttachedStickerBtnEl.onclick = clearPendingSticker;
+    }
+
+    loadStickerPack();
 
     applyTimeBasedTheme();
     updateCareUiDisplay();

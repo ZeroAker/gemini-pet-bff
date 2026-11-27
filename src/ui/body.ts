@@ -90,7 +90,23 @@ export const UI_BODY: string = `
     <button class="quick-action-btn refresh" id="quickRefreshBtn" type="button">🔄 刷新狀態</button>
   </div>
 
+  <div class="sticker-attach-bar" id="stickerAttachBar" style="display:none;">
+    <img class="sticker-attach-thumb" id="stickerAttachThumb" alt="" />
+    <span class="sticker-attach-label" id="stickerAttachLabel">已附加貼圖</span>
+    <button class="btn-sm" id="clearAttachedStickerBtn" type="button">✕ 移除</button>
+  </div>
+
+  <div class="sticker-drawer" id="stickerDrawer" style="display:none;">
+    <div class="sticker-drawer-header">
+      <div class="sticker-tabs" id="stickerTabs"></div>
+      <button class="btn-sm" id="closeStickerDrawerBtn" type="button">✕ 收起</button>
+    </div>
+    <div class="sticker-recent-row" id="stickerRecentRow" style="display:none;"></div>
+    <div class="sticker-grid" id="stickerGrid"></div>
+  </div>
+
   <footer>
+    <button class="btn-icon sticker-toggle-btn" id="stickerBtn" type="button" title="傳送貼圖">😊</button>
     <textarea id="input" rows="1" placeholder="跟桌寵說點什麼..."></textarea>
     <button id="sendBtn">傳送</button>
   </footer>

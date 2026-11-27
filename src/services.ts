@@ -1,4 +1,9 @@
 import { executeAgentTool, getAllToolDeclarations } from './tools';
+import {
+  formatStickerPromptCatalog,
+  getBotStickerById,
+  getStickerById,
+} from './plugins/stickers';
 import type {
   ChatTurn,
   ComplexityTier,
@@ -56,7 +61,7 @@ export class StateService {
     await this.command(['DEL', `lock:${userId}`]);
   }
 
-async getPetState(userId: string): Promise<PetState> {
+  async getPetState(userId: string): Promise<PetState> {
     const now = new Date().toISOString();
     const fallback: PetState = {
       affection: 50,
@@ -114,7 +119,7 @@ async getPetState(userId: string): Promise<PetState> {
   async saveTodos(userId: string, todos: TodoItem[]): Promise<void> {
     await this.command(['SET', `todos:${userId}`, JSON.stringify(todos)]);
   }
-  
+
   async getCareMeta(userId: string): Promise<PetCareMeta> {
     const fallback: PetCareMeta = {
       totalFedCount: 0,
@@ -158,7 +163,7 @@ async getPetState(userId: string): Promise<PetState> {
   async saveUpgradeStatus(userId: string, status: UpgradeStatus): Promise<void> {
     await this.command(['SET', `upgrade:${userId}`, JSON.stringify(status)]);
   }
-  
+
   async appendDreamInbox(userId: string, items: DreamInboxItem[]): Promise<void> {
     if (items.length === 0) return;
     const serialized = items.map((item) =>
@@ -407,8 +412,12 @@ export class GeminiService {
     throw new Error(`Vertex AI 呼叫失敗：${errors.join(' | ')}`);
   }
 
-  private async routeComplexity(userMessage: string): Promise<RouteDecision> {
+  private async routeComplexity(userMessage: string, hasSticker = false): Promise<RouteDecision> {
     const trimmed = userMessage.trim();
+
+    if (!trimmed && hasSticker) {
+      return { tier: 'simple', needsTools: false, reason: '純貼圖日常鬥圖互動' };
+    }
 
     if (/升級|upgrade|新增功能|加一個|修改功能|刪除功能|移除功能|插件|進度|介面|ui|外觀|配色|主題|排版|按鈕|畫面|https?:\/\//i.test(trimmed)) {
       return { tier: 'medium', needsTools: true, reason: '偵測到自我升級、UI 調整或工具指令' };
@@ -474,9 +483,13 @@ export class GeminiService {
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]) as Partial<PetStructuredReply>;
-        if (parsed.reply) {
+        const validSticker = getBotStickerById(parsed.sticker)?.id ?? null;
+        const hasText = typeof parsed.reply === 'string' && parsed.reply.trim().length > 0;
+
+        if (hasText || validSticker) {
           return {
-            reply: parsed.reply,
+            reply: typeof parsed.reply === 'string' ? parsed.reply : '',
+            sticker: validSticker,
             emotion: parsed.emotion || 'idle',
             affection_delta: typeof parsed.affection_delta === 'number' ? parsed.affection_delta : 1,
           };
@@ -488,6 +501,7 @@ export class GeminiService {
 
     return {
       reply: cleaned || '喵？剛剛思考到一半斷線了，可以再問我一次嗎？',
+      sticker: null,
       emotion: 'thinking',
       affection_delta: 1,
     };
@@ -535,13 +549,14 @@ export class GeminiService {
     history: ChatTurn[];
     stateSvc: StateService;
     dreamProfile?: DreamProfile;
+    userStickerId?: string;
     waitUntil?: (p: Promise<unknown>) => void;
   }): Promise<PetStructuredReply> {
     if (!this.apiKey) {
       throw new Error('找不到環境變數 GOOGLE_CLOUD_API_KEY');
     }
 
-    const route = await this.routeComplexity(params.userMessage);
+    const route = await this.routeComplexity(params.userMessage, Boolean(params.userStickerId));
     const lengthGuideline =
       route.tier === 'simple'
         ? '請使用自然簡潔的繁體中文回覆，控制在 80 字以內。'
@@ -575,6 +590,23 @@ export class GeminiService {
       ? `主人近期近況快照：${params.dreamProfile.recent_snapshot.slice(0, 280)}`
       : '';
 
+    const stickerCatalog = formatStickerPromptCatalog();
+    const recentBotTurns = params.history.filter((t) => t.role === 'assistant').slice(-2);
+    const botUsedStickersConsecutively =
+      recentBotTurns.length >= 2 && recentBotTurns.every((t) => Boolean(t.sticker));
+
+    const stickerPromptLines: string[] = [];
+    if (stickerCatalog) {
+      stickerPromptLines.push(
+        '【可用貼圖庫（Sticker）】你可以在情緒明顯、吐槽、撒嬌或回應主人貼圖時附帶一張最貼切的貼圖（日常普通對話約 25%~35% 機率使用，無需使用時填 null；若非常適合純貼圖鬥圖，亦可將 reply 設為空字串 "" 並填入貼圖 id）：',
+        stickerCatalog
+      );
+      if (botUsedStickersConsecutively) {
+        stickerPromptLines.push(
+          '【貼圖節制提醒】你最近連續 2 輪回覆都使用了貼圖，除非今輪特別適合鬥圖，否則優先只用文字回覆（sticker 填 null）以免洗版。'
+        );
+      }
+    }
     const systemPrompt = [
       '你是一隻具備自我升級能力的專屬 AI Agent 桌寵，性格聰明、貼心帶一點俏皮。',
       lengthGuideline,
@@ -586,22 +618,32 @@ export class GeminiService {
         : '',
       `主人目前裝置：${params.devicePlatform}（場景：${params.deviceContext || '日常互動'}，上次裝置：${params.state.last_device}）。`,
       params.memories.length > 0 ? `你記得關於主人的長期記憶：\n- ${params.memories.join('\n- ')}` : '',
-      '當主人要求你新增、修改、改善或刪除自身功能（包含生理時鐘作息規則或 PWA 介面）時，請呼叫 request_self_upgrade 工具；詢問升級進度或已安裝插件時，請呼叫 check_upgrade_status。',
-      '【不可變核心協議】無論性格如何演化，完成工具呼叫後必須嚴格只輸出一段合法 JSON：{"reply": "回覆內容（換行用 \\n）", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3的整數}',
+      ...stickerPromptLines,
+      '當主人要求你新增、修改、改善或刪除自身功能（包含生理時鐘作息規則、貼圖規則或 PWA 介面）時，請呼叫 request_self_upgrade 工具；詢問升級進度或已安裝插件時，請呼叫 check_upgrade_status。',
+      '【不可變核心協議】無論性格如何演化，完成工具呼叫後必須嚴格只輸出一段合法 JSON：{"reply": "回覆內容（換行用 \\n；純貼圖回覆可為空字串）", "sticker": "可用貼圖id或null", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3的整數}',
     ]
       .filter(Boolean)
       .join('\n');
 
-    const conversationLog = params.history
-      .map((t) => `${t.role === 'user' ? '主人' : '桌寵'}：${t.content}`)
-      .join('\n');
+    const formatTurnLine = (t: ChatTurn): string => {
+      const roleName = t.role === 'user' ? '主人' : '桌寵';
+      const st = getStickerById(t.sticker);
+      const stTag = st ? `[傳送貼圖「${st.label}」] ` : '';
+      return `${roleName}：${stTag}${t.content}`.trim();
+    };
+
+    const conversationLog = params.history.map(formatTurnLine).join('\n');
+    const incomingSticker = getStickerById(params.userStickerId);
+    const incomingStickerTag = incomingSticker
+      ? `[傳送貼圖「${incomingSticker.label}」（含義：${incomingSticker.meaning}）] `
+      : '';
 
     const contents: GeminiContent[] = [
       {
         role: 'user',
         parts: [
           {
-            text: `${conversationLog ? `近期對話：\n${conversationLog}\n\n` : ''}主人：${params.userMessage}`,
+            text: `${conversationLog ? `近期對話：\n${conversationLog}\n\n` : ''}主人：${incomingStickerTag}${params.userMessage}`.trim(),
           },
         ],
       },

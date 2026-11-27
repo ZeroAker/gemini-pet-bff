@@ -1180,4 +1180,172 @@ export const UI_STYLES: string = `
       font-size: 12px;
       color: #8c96b2;
     }
+    .sticker-toggle-btn {
+      padding: 10px 11px;
+      font-size: 17px;
+      border-radius: 12px;
+      line-height: 1;
+    }
+    .sticker-attach-bar {
+      background: #171b2d;
+      border-top: 1px solid #323b5e;
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .sticker-attach-thumb {
+      width: 34px;
+      height: 34px;
+      object-fit: contain;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .sticker-attach-label {
+      flex: 1;
+      font-size: 12px;
+      color: #dfe4f2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sticker-drawer {
+      background: #141827;
+      border-top: 1px solid #2b3147;
+      padding: 10px 12px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .sticker-drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .sticker-tabs {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .sticker-tabs::-webkit-scrollbar { display: none; }
+    .sticker-tab {
+      background: #1d2236;
+      color: #9aa3bd;
+      border: 1px solid #2f3754;
+      border-radius: 99px;
+      padding: 3px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .sticker-tab.active {
+      background: #2b3152;
+      color: #fff;
+      border-color: #7c6ff7;
+    }
+    .sticker-recent-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #23283c;
+      scrollbar-width: none;
+    }
+    .sticker-recent-row::-webkit-scrollbar { display: none; }
+    .sticker-recent-tag {
+      font-size: 11px;
+      color: #8c96b2;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .sticker-recent-btn {
+      background: #1c2135;
+      border: 1px solid #2f3754;
+      border-radius: 8px;
+      padding: 3px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .sticker-recent-btn:hover { border-color: #7c6ff7; }
+    .sticker-recent-btn img {
+      width: 36px;
+      height: 36px;
+      object-fit: contain;
+      display: block;
+    }
+    .sticker-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+      gap: 8px;
+      max-height: 190px;
+      overflow-y: auto;
+    }
+    .sticker-item {
+      background: #1c2135;
+      border: 1px solid #2f3754;
+      border-radius: 10px;
+      padding: 6px 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      transition: transform 0.15s ease, border-color 0.2s ease;
+    }
+    .sticker-item:hover {
+      border-color: #7c6ff7;
+      transform: translateY(-2px);
+    }
+    .sticker-item img {
+      width: 58px;
+      height: 58px;
+      object-fit: contain;
+    }
+    .sticker-item span {
+      font-size: 11px;
+      color: #cfd5e6;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+    }
+    .sticker-standalone {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 2px;
+      animation: stickerPopIn 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .msg.bot .sticker-standalone { align-items: flex-start; }
+    .chat-sticker-img {
+      width: 128px;
+      height: 128px;
+      object-fit: contain;
+      display: block;
+      background: transparent;
+      user-select: none;
+    }
+    .chat-sticker-fallback {
+      font-size: 12px;
+      color: #a29bfe;
+      background: rgba(108, 92, 231, 0.16);
+      border: 1px solid rgba(124, 111, 247, 0.4);
+      border-radius: 10px;
+      padding: 6px 10px;
+    }
+    .sticker-only-time {
+      font-size: 11px;
+      color: #8c96b2;
+      padding: 0 4px;
+      font-variant-numeric: tabular-nums;
+    }
+    @keyframes stickerPopIn {
+      0% { opacity: 0; transform: scale(0.75); }
+      100% { opacity: 1; transform: scale(1); }
+    }
 `;

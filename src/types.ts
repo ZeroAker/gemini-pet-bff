@@ -28,6 +28,12 @@ export interface RouteDecision {
   reason: string;
 }
 
+export interface StickerPayload {
+  id: string;
+  url: string;
+  label: string;
+}
+
 export interface InteractRequest {
   user_id: string;
   device: {
@@ -35,8 +41,9 @@ export interface InteractRequest {
     context?: string;
   };
   input: {
-    type: 'text';
+    type: 'text' | 'sticker';
     content: string;
+    sticker_id?: string;
   };
 }
 
@@ -59,6 +66,7 @@ export interface LifecycleContext {
 
 export interface PetStructuredReply {
   reply: string;
+  sticker?: string | null;
   emotion: PetEmotion;
   affection_delta: number;
   meta?: {
@@ -71,6 +79,7 @@ export interface PetStructuredReply {
 export interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
+  sticker?: string;
 }
 
 export interface TodoItem {

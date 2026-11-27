@@ -337,6 +337,9 @@ function runAllChecks(uiTouched) {
   const { editable_files } = listProjectFiles();
   if (!editable_files.includes('src/plugins/registry.ts')) {
     throw new Error('安全攔截：缺少必要檔案 src/plugins/registry.ts');
+  } 
+  if (!editable_files.includes('src/plugins/stickers.ts')) {
+    throw new Error('安全攔截：缺少必要檔案 src/plugins/stickers.ts');
   }
   for (const relPath of editable_files) {
     const content = fs.readFileSync(path.resolve(relPath), 'utf8');
@@ -583,6 +586,14 @@ async function executeTool(name, args, session) {
       const absPath = path.resolve(relPath);
       if (!fs.existsSync(absPath)) {
         return { ok: false, error: `檔案原本就不存在：${relPath}` };
+      }
+      if (
+        relPath === 'src/ui.ts' ||
+        relPath === 'src/plugins/registry.ts' ||
+        relPath === 'src/plugins/lifecycle.ts' ||
+        relPath === 'src/plugins/stickers.ts'
+      ) {
+        return { ok: false, error: `安全攔截：禁止刪除必要檔案 (${relPath})` };
       }
       fs.unlinkSync(absPath);
 
@@ -924,6 +935,7 @@ function buildSystemPrompt() {
     '   - 模板字串內嵌 JS 優先用單引號與字串拼接，避免反引號或 `${` 跳脫失誤。',
     '8. src/plugins/lifecycle.ts 為每小時 Cron 生理時鐘規則檔，嚴禁刪除且必須保留 export function computeNextLifecycleState(state: PetState, ctx: LifecycleContext): PetState。',
     '9. 後端已提供以下受 Bearer Token 保護嘅唯讀／互動 API，修改 src/ui.ts 時可直接呼叫：GET /v1/pet/state?uid=...、GET /v1/pet/diaries?uid=...&limit=30、GET /v1/pet/persona?uid=...、POST /v1/pet/persona/rollback?uid=...、POST /v1/pet/dream/trigger?uid=...&force=true。',
+    '10. src/plugins/stickers.ts 為貼圖註冊表，嚴禁刪除且必須保留 STICKER_PACK 與相關匯出函式；不可修改或刪除 public/stickers/ 內圖片，但可依主人需求微調 bot_hint、meaning、category 或 enabled。',
     '',
     '【高效多步工作流】',
     '1. 先呼叫 read_file 閱讀與需求直接相關的檔案（若要新增插件先看 src/types.ts 與 src/plugins/registry.ts；若改 UI 先看 src/ui.ts 或 src/ui/*）。',

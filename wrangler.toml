@@ -16,3 +16,6 @@ GITHUB_BRANCH = "main"
 
 [triggers]
 crons = ["0 * * * *"]
+
+[assets]
+directory = "./public"

@@ -4,6 +4,13 @@ import { GeminiService, MemoryService, StateService } from './services';
 import type { Env, InteractRequest, PetState } from './types';
 import { CHAT_HTML } from './ui';
 import { petCareGamePlugin } from './plugins/pet-care-game';
+import {
+  getBotStickerById,
+  getStickerById,
+  getUserStickers,
+  STICKER_PACK_VERSION,
+  toStickerPayload,
+} from './plugins/stickers';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -56,6 +63,20 @@ app.get('/health', (c) =>
     status: 'ok',
     service: 'gemini-pet-bff',
     loaded_env_keys: Object.keys(c.env),
+  })
+);
+
+app.get('/v1/stickers', (c) =>
+  c.json({
+    ok: true,
+    pack_version: STICKER_PACK_VERSION,
+    stickers: getUserStickers().map((s) => ({
+      id: s.id,
+      url: s.url,
+      label: s.label,
+      category: s.category,
+      moods: s.moods ?? [],
+    })),
   })
 );
 
@@ -295,17 +316,28 @@ app.post('/v1/pet/interact', async (c) => {
     return c.json({ reply: '⚠️ 診斷錯誤：裝置鎖定中，請稍候再試' }, 200);
   }
 
+  const rawContent = typeof body.input?.content === 'string' ? body.input.content.trim() : '';
+  const userStickerItem = getStickerById(body.input?.sticker_id);
+  const userStickerId = userStickerItem && userStickerItem.enabled ? userStickerItem.id : undefined;
+
+  if (!rawContent && !userStickerId) {
+    return c.json({ reply: '⚠️ 診斷錯誤：訊息內容與貼圖不可同時為空' }, 200);
+  }
+
+  const searchableText = rawContent || `[傳送貼圖：${userStickerItem!.label}（${userStickerItem!.meaning}）]`;
+
   try {
     const [state, history, memories, dreamProfile] = await Promise.all([
       stateSvc.getPetState(userId),
       stateSvc.getRecentHistory(userId),
-      memorySvc.searchMemories(userId, body.input.content),
+      memorySvc.searchMemories(userId, searchableText),
       stateSvc.getDreamProfile(userId),
     ]);
 
     const aiResult = await geminiSvc.generateReply({
       userId,
-      userMessage: body.input.content,
+      userMessage: rawContent,
+      userStickerId,
       devicePlatform: body.device.platform,
       deviceContext: body.device.context,
       state,
@@ -323,26 +355,32 @@ app.post('/v1/pet/interact', async (c) => {
 
     const nextState: PetState = careToolUsed
       ? {
-          ...latestState,
-          last_device: body.device.platform,
-          last_active_at: nowIso,
-          updated_at: nowIso,
-        }
+        ...latestState,
+        last_device: body.device.platform,
+        last_active_at: nowIso,
+        updated_at: nowIso,
+      }
       : {
-          ...state,
-          affection: Math.min(100, Math.max(0, state.affection + aiResult.affection_delta)),
-          energy: Math.max(10, state.energy - 1),
-          mood: aiResult.emotion,
-          status_note: '啱啱同主人傾完計',
-          last_device: body.device.platform,
-          last_active_at: nowIso,
-          updated_at: nowIso,
-        };
+        ...state,
+        affection: Math.min(100, Math.max(0, state.affection + aiResult.affection_delta)),
+        energy: Math.max(10, state.energy - 1),
+        mood: aiResult.emotion,
+        status_note: '啱啱同主人傾完計',
+        last_device: body.device.platform,
+        last_active_at: nowIso,
+        updated_at: nowIso,
+      };
+
+    const botStickerItem = getBotStickerById(aiResult.sticker);
+    const botStickerPayload = botStickerItem ? toStickerPayload(botStickerItem) : null;
 
     const newTurns = [
-      { role: 'user' as const, content: body.input.content },
-      { role: 'assistant' as const, content: aiResult.reply },
+      { role: 'user' as const, content: rawContent, sticker: userStickerId },
+      { role: 'assistant' as const, content: aiResult.reply, sticker: botStickerItem?.id },
     ];
+
+    const userReadableTurn = `${userStickerItem ? `[傳送貼圖：${userStickerItem.label}] ` : ''}${rawContent}`.trim();
+    const botReadableTurn = `${botStickerItem ? `[傳送貼圖：${botStickerItem.label}] ` : ''}${aiResult.reply}`.trim();
 
     c.executionCtx.waitUntil(
       Promise.all([
@@ -350,15 +388,19 @@ app.post('/v1/pet/interact', async (c) => {
         stateSvc.savePetState(userId, nextState),
         stateSvc.appendHistory(userId, newTurns),
         stateSvc.appendDreamInbox(userId, [
-          { role: 'user', content: body.input.content, ts: nowMs },
-          { role: 'assistant', content: aiResult.reply, ts: nowMs + 1 },
+          { role: 'user', content: userReadableTurn, ts: nowMs },
+          { role: 'assistant', content: botReadableTurn, ts: nowMs + 1 },
         ]),
-        memorySvc.addMemory(userId, newTurns),
+        memorySvc.addMemory(userId, [
+          { role: 'user', content: userReadableTurn },
+          { role: 'assistant', content: botReadableTurn },
+        ]),
       ])
     );
 
     return c.json({
       reply: aiResult.reply,
+      sticker: botStickerPayload,
       action: { emotion: aiResult.emotion },
       pet_state: nextState,
       meta: aiResult.meta,
