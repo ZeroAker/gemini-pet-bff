@@ -3,6 +3,7 @@ import type { PluginTool } from '../types';
 interface GitHubWorkflowRun {
   id: number;
   run_number?: number;
+  run_attempt?: number;
   name?: string;
   display_title?: string;
   path?: string;
@@ -30,6 +31,7 @@ interface GitHubJobStep {
 
 interface GitHubJob {
   id: number;
+  run_attempt?: number;
   name: string;
   status: string;
   conclusion: string | null;
@@ -200,7 +202,19 @@ function buildUpgradeVerdictSummary(
 } {
   const runStatus = (targetRun.status || '').toLowerCase();
   const runConclusion = (targetRun.conclusion || '').toLowerCase();
-  const isCompleted = runStatus === 'completed';
+  const hasActiveJobOrStep = jobDetails.some((j) => {
+    const jStatus = asTrimmedString(j.status).toLowerCase();
+    const rSteps = Array.isArray(j.running_steps) ? j.running_steps : [];
+    return (
+      jStatus === 'queued' ||
+      jStatus === 'in_progress' ||
+      jStatus === 'waiting' ||
+      jStatus === 'pending' ||
+      (jStatus !== '' && jStatus !== 'completed') ||
+      rSteps.length > 0
+    );
+  });
+  const isCompleted = runStatus === 'completed' && !hasActiveJobOrStep;
   const isSuccess = isCompleted && runConclusion === 'success';
   const actionsUrl = targetRun.html_url ?? '';
 
@@ -209,6 +223,9 @@ function buildUpgradeVerdictSummary(
   const failureReasons: string[] = [];
 
   for (const job of jobDetails) {
+    if (isSuccess || asTrimmedString(job.conclusion).toLowerCase() === 'success') {
+      continue;
+    }
     const jobName = asTrimmedString(job.name) || 'Job';
     const fSteps = Array.isArray(job.failed_steps) ? job.failed_steps : [];
     for (const st of fSteps) {
@@ -273,6 +290,7 @@ function buildUpgradeVerdictSummary(
   }
 
   const isRejected =
+    isCompleted &&
     !isSuccess &&
     (failedSteps.some((s) => REJECTION_SIGNAL_PATTERN.test(s)) ||
       annotationsSummary.some((a) => REJECTION_SIGNAL_PATTERN.test(a)) ||
@@ -471,6 +489,7 @@ export const githubActionsUpgradeStatusPlugin: PluginTool = {
           run: {
             id: targetRun.id,
             run_number: targetRun.run_number ?? null,
+            run_attempt: targetRun.run_attempt ?? 1,
             name: targetRun.name ?? '',
             display_title: targetRun.display_title ?? '',
             status: targetRun.status,
@@ -500,7 +519,10 @@ export const githubActionsUpgradeStatusPlugin: PluginTool = {
           )
           .map((s) => ({ number: s.number, name: s.name, status: s.status, conclusion: s.conclusion }));
         const runningSteps = steps
-          .filter((s) => s.status === 'in_progress')
+          .filter((s) => {
+            const st = (s.status || '').toLowerCase();
+            return st === 'in_progress' || st === 'queued' || st === 'waiting' || st === 'pending';
+          })
           .map((s) => ({ number: s.number, name: s.name, status: s.status }));
 
         let annotations: Array<Record<string, unknown>> = [];
@@ -548,6 +570,7 @@ export const githubActionsUpgradeStatusPlugin: PluginTool = {
 
         jobDetails.push({
           id: job.id,
+          run_attempt: job.run_attempt ?? 1,
           name: job.name,
           status: job.status,
           conclusion: job.conclusion,
@@ -579,6 +602,7 @@ export const githubActionsUpgradeStatusPlugin: PluginTool = {
         run: {
           id: targetRun.id,
           run_number: targetRun.run_number ?? null,
+          run_attempt: targetRun.run_attempt ?? 1,
           name: targetRun.name ?? '',
           display_title: targetRun.display_title ?? '',
           event: targetRun.event ?? '',
