@@ -189,16 +189,6 @@ export interface PluginContext {
   stateSvc: StateService;
 }
 
-export interface ToolDeclaration {
-  name: string;
-  description: string;
-  parameters: {
-    type: 'OBJECT';
-    properties: Record<string, { type: string; description: string }>;
-    required?: string[];
-  };
-}
-
 export interface PluginTool {
   declaration: ToolDeclaration;
   execute: (args: Record<string, unknown>, ctx: PluginContext) => Promise<Record<string, unknown>>;

@@ -1,3 +1,11 @@
-<div id="petStage" style="display:none;"></div>
+<div id="petStage" class="pet-stage mood-idle" title="按住拖曳視窗｜雙擊展開／收合對話面板">
+    <div class="pet-stage-toolbar no-drag">
+      <button type="button" class="pet-stage-toggle-btn no-drag" id="toggleChatPanelBtn" title="展開／收合對話面板（亦可直接雙擊立繪）">💬 收合對話</button>
+    </div>
+    <div class="pet-stage-avatar-wrap" id="petStageAvatarWrap">
+      <img id="petAvatarImg" class="pet-avatar-img mood-idle" src="/avatar/idle.webp" alt="Gemini 桌寵立繪" draggable="false" />
+    </div>
+    <div class="pet-stage-hint no-drag" id="petStageHint">雙擊立繪展開／收合對話</div>
+  </div>
 
-  <main id="chat"></main>
+  <main id="chat" class="no-drag"></main>

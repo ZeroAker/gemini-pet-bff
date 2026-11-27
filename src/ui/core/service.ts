@@ -42,6 +42,9 @@ export const moduleCore: UiCoreSkeletonModule = {
     var quickSleepBtnEl = document.getElementById('quickSleepBtn');
     var quickRefreshBtnEl = document.getElementById('quickRefreshBtn');
     var petStageEl = document.getElementById('petStage');
+    var petAvatarImgEl = document.getElementById('petAvatarImg');
+    var toggleChatPanelBtnEl = document.getElementById('toggleChatPanelBtn');
+    var petStageHintEl = document.getElementById('petStageHint');
     var modalEl = document.getElementById('settingsModal');
     var tokenInput = document.getElementById('tokenInput');
     var uidInput = document.getElementById('uidInput');
@@ -148,20 +151,116 @@ export const moduleCore: UiCoreSkeletonModule = {
 
     function setPetMood(mood) {
       var m = normalizeMood(mood);
-      if (!petEmojiEl) return;
-      petEmojiEl.textContent = EMOJI_MAP[m] || '🐱';
-      VALID_MOODS.forEach(function (k) {
-        petEmojiEl.classList.remove('mood-' + k);
-      });
-      petEmojiEl.classList.add('mood-' + m);
+      if (petEmojiEl) {
+        petEmojiEl.textContent = EMOJI_MAP[m] || '🐱';
+        VALID_MOODS.forEach(function (k) {
+          petEmojiEl.classList.remove('mood-' + k);
+        });
+        petEmojiEl.classList.add('mood-' + m);
+      }
+      if (petStageEl) {
+        VALID_MOODS.forEach(function (k) {
+          petStageEl.classList.remove('mood-' + k);
+        });
+        petStageEl.classList.add('mood-' + m);
+      }
+      if (petAvatarImgEl) {
+        VALID_MOODS.forEach(function (k) {
+          petAvatarImgEl.classList.remove('mood-' + k);
+        });
+        petAvatarImgEl.classList.add('mood-' + m);
+        var nextAvatarSrc = '/avatar/' + m + '.webp';
+        if (petAvatarImgEl.getAttribute('data-emotion') !== m) {
+          petAvatarImgEl.setAttribute('data-emotion', m);
+          petAvatarImgEl.src = nextAvatarSrc;
+        }
+      }
     }
 
+    if (petAvatarImgEl) {
+      petAvatarImgEl.onerror = function () {
+        var curSrc = petAvatarImgEl.getAttribute('src') || '';
+        if (curSrc !== '/avatar/idle.webp') {
+          petAvatarImgEl.src = '/avatar/idle.webp';
+        }
+      };
+    }
+
+    function isDesktopTransparentEnv() {
+      var ua = navigator.userAgent || '';
+      var search = (typeof location !== 'undefined' && location.search) ? location.search : '';
+      return /Electron/i.test(ua) || /[?&](desktop|transparent)=1/i.test(search);
+    }
+
+    if (isDesktopTransparentEnv()) {
+      document.documentElement.classList.add('desktop-transparent');
+      document.body.classList.add('desktop-transparent');
+    }
+
+    var lastPanelToggleAt = 0;
+    function setChatPanelCollapsed(collapsed) {
+      if (collapsed) {
+        document.documentElement.classList.add('panel-collapsed-root');
+        document.body.classList.add('panel-collapsed');
+      } else {
+        document.documentElement.classList.remove('panel-collapsed-root');
+        document.body.classList.remove('panel-collapsed');
+      }
+      if (toggleChatPanelBtnEl) {
+        toggleChatPanelBtnEl.textContent = collapsed ? '💬 展開對話' : '💬 收合對話';
+      }
+      try {
+        localStorage.setItem('pet_panel_collapsed', collapsed ? '1' : '0');
+      } catch (e) {}
+    }
+
+    function togglePetChatPanel() {
+      var now = Date.now();
+      if (now - lastPanelToggleAt < 220) return;
+      lastPanelToggleAt = now;
+      var willCollapse = !document.body.classList.contains('panel-collapsed');
+      setChatPanelCollapsed(willCollapse);
+    }
+
+    window.togglePetChatPanel = togglePetChatPanel;
+
+    if (toggleChatPanelBtnEl) {
+      toggleChatPanelBtnEl.onclick = function (e) {
+        e.stopPropagation();
+        togglePetChatPanel();
+      };
+    }
+    if (petStageHintEl) {
+      petStageHintEl.ondblclick = function (e) {
+        e.stopPropagation();
+        togglePetChatPanel();
+      };
+    }
+    if (petStageEl) {
+      petStageEl.addEventListener('dblclick', function () {
+        togglePetChatPanel();
+      });
+    }
+
+    try {
+      if (localStorage.getItem('pet_panel_collapsed') === '1') {
+        setChatPanelCollapsed(true);
+      }
+    } catch (e) {}
+
     function triggerAvatarBounce() {
-      if (!petEmojiEl) return;
-      petEmojiEl.classList.add('bounce');
-      setTimeout(function () {
-        petEmojiEl.classList.remove('bounce');
-      }, 520);
+      if (petEmojiEl) {
+        petEmojiEl.classList.add('bounce');
+        setTimeout(function () {
+          petEmojiEl.classList.remove('bounce');
+        }, 520);
+      }
+      if (petAvatarImgEl) {
+        petAvatarImgEl.classList.add('bounce');
+        setTimeout(function () {
+          petAvatarImgEl.classList.remove('bounce');
+        }, 520);
+      }
     }
 
     function triggerQuickAvatarReaction(tempEmoji) {

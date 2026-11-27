@@ -438,14 +438,183 @@
     }
     #petStage {
       width: 100%;
-      min-height: 180px;
-      background: radial-gradient(circle at center, #1b2038 0%, #0f111a 100%);
-      border-bottom: 1px solid #262b3d;
+      min-height: 210px;
+      max-height: 250px;
+      background: radial-gradient(circle at center, rgba(27, 32, 56, 0.78) 0%, rgba(15, 17, 26, 0.35) 100%);
+      border-bottom: 1px solid rgba(38, 43, 61, 0.75);
       position: relative;
       flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
       overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-app-region: drag;
+      cursor: grab;
+      transition: min-height 0.3s ease, max-height 0.3s ease, background 0.3s ease, border-color 0.3s ease;
+    }
+    .pet-stage-toolbar {
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      z-index: 5;
+      display: flex;
+      gap: 6px;
+      opacity: 0.78;
+      transition: opacity 0.2s ease;
+    }
+    #petStage:hover .pet-stage-toolbar {
+      opacity: 1;
+    }
+    .pet-stage-toggle-btn {
+      background: rgba(23, 26, 38, 0.78);
+      color: #dfe4f2;
+      border: 1px solid rgba(124, 111, 247, 0.45);
+      border-radius: 99px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      backdrop-filter: blur(6px);
+      transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+    }
+    .pet-stage-toggle-btn:hover {
+      background: rgba(108, 92, 231, 0.38);
+      border-color: #a29bfe;
+      color: #fff;
+      transform: translateY(-1px);
+    }
+    .pet-stage-avatar-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 170px;
+      height: 170px;
+      pointer-events: auto;
+    }
+    .pet-avatar-img {
+      max-width: 164px;
+      max-height: 164px;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.45));
+      transform-origin: center bottom;
+      animation: petStageBreath 3.6s ease-in-out infinite;
+      will-change: transform, filter;
+      user-select: none;
+      -webkit-user-drag: none;
+      transition: filter 0.35s ease;
+    }
+    .pet-avatar-img.mood-happy {
+      animation: petStageBreath 2.2s ease-in-out infinite;
+      filter: drop-shadow(0 8px 20px rgba(253, 121, 168, 0.48));
+    }
+    .pet-avatar-img.mood-thinking {
+      animation: petStageBreath 3.2s ease-in-out infinite;
+      filter: drop-shadow(0 8px 20px rgba(116, 185, 255, 0.45));
+    }
+    .pet-avatar-img.mood-sleepy {
+      animation: petStageSleepyBreath 4.6s ease-in-out infinite;
+      filter: drop-shadow(0 6px 16px rgba(129, 236, 236, 0.3));
+    }
+    .pet-avatar-img.mood-caring {
+      animation: petStageBreath 2.6s ease-in-out infinite;
+      filter: drop-shadow(0 8px 22px rgba(255, 118, 117, 0.55));
+    }
+    .pet-avatar-img.bounce {
+      animation: avatarQuickReact 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+    }
+    @keyframes petStageBreath {
+      0%, 100% { transform: translateY(0) scale(1); }
+      50% { transform: translateY(-5px) scale(1.03, 0.985); }
+    }
+    @keyframes petStageSleepyBreath {
+      0%, 100% { transform: translateY(1px) scale(0.98); opacity: 0.94; }
+      50% { transform: translateY(-2px) scale(1.015); opacity: 1; }
+    }
+    .pet-stage-hint {
+      position: absolute;
+      bottom: 6px;
+      font-size: 10.5px;
+      color: rgba(207, 213, 230, 0.72);
+      background: rgba(15, 17, 26, 0.52);
+      border: 1px solid rgba(124, 111, 247, 0.25);
+      border-radius: 99px;
+      padding: 2px 9px;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      cursor: pointer;
+    }
+    #petStage:hover .pet-stage-hint {
+      opacity: 1;
+    }
+    .no-drag,
+    button,
+    input,
+    textarea,
+    select,
+    a,
+    #chat,
+    .msg,
+    .bubble,
+    footer,
+    .quick-actions-bar,
+    .sticker-drawer,
+    .sticker-attach-bar,
+    .header-actions,
+    .pet-bars-row,
+    .pet-activity-badge,
+    .modal,
+    .modal-card,
+    #proactiveBubble,
+    #upgradeBar,
+    #titleProgressSlot {
+      -webkit-app-region: no-drag;
+    }
+    html.desktop-transparent,
+    body.desktop-transparent,
+    body.desktop-transparent.theme-day,
+    body.desktop-transparent.theme-dusk,
+    body.desktop-transparent.theme-night,
+    html.panel-collapsed-root,
+    body.panel-collapsed,
+    body.panel-collapsed.theme-day,
+    body.panel-collapsed.theme-dusk,
+    body.panel-collapsed.theme-night {
+      background: transparent !important;
+    }
+    body.desktop-transparent #petStage,
+    body.panel-collapsed #petStage {
+      background: transparent !important;
+      border-bottom-color: transparent !important;
+    }
+    body.panel-collapsed header,
+    body.panel-collapsed #titleProgressSlot,
+    body.panel-collapsed #upgradeBar,
+    body.panel-collapsed #proactiveBubble,
+    body.panel-collapsed #chat,
+    body.panel-collapsed #quickActionsBar,
+    body.panel-collapsed #stickerAttachBar,
+    body.panel-collapsed #stickerDrawer,
+    body.panel-collapsed footer {
+      display: none !important;
+    }
+    body.panel-collapsed #petStage {
+      flex: 1 1 auto;
+      min-height: 100dvh;
+      max-height: 100dvh;
+      border-bottom: none;
+    }
+    body.panel-collapsed .pet-stage-avatar-wrap {
+      width: 220px;
+      height: 220px;
+    }
+    body.panel-collapsed .pet-avatar-img {
+      max-width: 210px;
+      max-height: 210px;
     }
     #chat {
       flex: 1;
