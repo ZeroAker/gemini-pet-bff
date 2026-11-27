@@ -32,21 +32,22 @@
 ### 4. 安全沙盒化多步自主升級（Agentic Self-Upgrade）
 - 當使用者透過對話要求新增/修改/刪除功能或調整 PWA 介面時，Worker 於 1 秒內派發 `workflow_dispatch` 至 GitHub Actions（`self-upgrade-runner.yml`），徹底避開 Serverless 逾時限制。
 - **20 輪自主工程師 Agent（`scripts/self-upgrade.mjs`）**：
-  - 內建 `list_files`、`read_file`、`write_file`、`patch_file`、`delete_file`、`run_checks`、`finish_upgrade`、`reject_upgrade` 工具。
+  - 內建 `list_files`、`read_file`、`search_in_file`、`write_file`、`patch_file`、`delete_file`、`run_checks`、`finish_upgrade`、`reject_upgrade` 工具，並具備舊輪次長輸出自動摺疊（Context Pruning）機制。
   - 使用 `node:https` 原生 SSE 串流搭配 **5 分鐘 Idle Watchdog**、逾時自動原地重試、與 **20 秒 Redis 即時心跳**同步給 PWA 進度面板。
 - **多層核心保護防線**：
-  - **白名單隔離**：僅允許修改 `src/plugins/*.ts`、`src/ui.ts` 與 `src/ui/*.ts`；核心架構檔案僅供唯讀參考。
-  - **核心不可破壞**：嚴禁刪除 `src/plugins/registry.ts`、`src/plugins/lifecycle.ts`、`src/ui.ts`，禁止覆寫核心保留工具名稱與使用 `eval` / `new Function`。
+  - **白名單隔離**：僅允許修改 `src/plugins/*.ts`、`src/ui.ts` 與 `src/ui/**`（包含各功能子資料夾下的 `.ts`、`.html`、`.css`）；核心架構檔案僅供唯讀參考。
+  - **核心不可破壞**：嚴禁刪除 `src/plugins/registry.ts`、`src/plugins/lifecycle.ts`、`src/plugins/stickers.ts`、`src/ui.ts`，禁止覆寫核心保留工具名稱與使用 `eval` / `new Function`。
   - **自動驗證閘門**：合併前強制通過跨檔 VM 沙盒 UI 契約檢查、所有內嵌 `<script>` 語法驗證與全專案 `npx tsc --noEmit`，通過後自動建分支、開 PR 並 Squash Merge 觸發 Cloudflare 部署。
 
 ### 5. 模組化 PWA 互動介面
-- 拆分為 `src/ui/styles.ts`、`src/ui/body.ts`、`src/ui/script.ts`，由 `src/ui.ts` 組裝輸出於根路由 `/`。
-- 支援**日／黃昏／夜動態主題**、情緒動畫頭像、好感／活力／無聊度進度條、快捷互動列（摸頭／餵零食／哄瞓覺／刷新狀態）。
-- 內建四大互動面板：
-  1. **🪵 Log Cabin 升級日誌面板**：即時輪詢進度條、步驟日誌、PR 與 Actions 連結。
-  2. **🔔 主動關懷排程面板**：每日／固定間隔／閒置提醒規則、AI 隨機生成句子開關與氣泡提醒。
-  3. **🎮 餵食與互動小遊戲**：香烤小魚乾／草莓蛋糕／星光特調咖啡餵食、猜拳大作戰、10 秒點擊接愛心挑戰。
-  4. **📖 日記與性格演化面板**：時間軸日記本、四軸性格條、共同梗標籤、對主人的印象、一鍵還原性格與手動「立即發夢」。
+- 採用**按功能垂直拆分的子資料夾架構（`src/ui/<module>/`）**：每個功能模組獨立一個子資料夾（內含原生 `.html`、`.css` 與 `service.ts`），透過 `src/ui/ui-module-types.ts` 定義統一插槽介面，由 `src/ui.ts` 匯總組裝輸出於根路由 `/`。
+- 支援**日／黃昏／夜動態主題**、情緒動畫頭像、好感／活力／無聊度進度條、快捷互動列（摸頭／餵零食／哄瞓覺／刷新狀態）與貼圖抽屜。
+- 內建五大功能模組資料夾：
+  1. **`src/ui/core/`（核心骨架與聊天）**：全域與動態主題樣式、頂部狀態列、聊天視窗、快捷互動列、貼圖抽屜、連線設定彈窗與 `/v1/pet/interact`、`/v1/pet/state`、`/v1/pet/lifecycle/tick` 同步邏輯。
+  2. **`src/ui/upgrade/`（🪵 Log Cabin 升級日誌面板）**：即時輪詢進度條、步驟日誌、PR 與 GitHub Actions 雙源狀態校準。
+  3. **`src/ui/proactive/`（🔔 主動關懷排程面板）**：每日／固定間隔／閒置提醒規則、AI 隨機生成句子開關、主動關懷氣泡與升級完成通知。
+  4. **`src/ui/care-game/`（🎮 餵食與互動小遊戲）**：香烤小魚乾／草莓蛋糕／星光特調咖啡餵食、猜拳大作戰、10 秒點擊接愛心挑戰。
+  5. **`src/ui/diary-persona/`（📖 日記與性格演化面板）**：時間軸日記本、四軸性格條、共同梗標籤、對主人的印象、一鍵還原性格與手動「立即發夢」。
 - 預留 `#petStage` 區域供未來整合 3D 模型（`<model-viewer>` / WebGL）。
 
 ---
@@ -65,17 +66,40 @@ gemini-pet-bff/
 ├── src/
 │   ├── index.ts                         # Hono 路由入口、認證 API 與 Cloudflare Cron Handler
 │   ├── services.ts                      # StateService (Redis)、MemoryService (Mem0)、GeminiService (Vertex AI)
-│   ├── tools.ts                         # 核心工具實作與自訂插件沙盒派發器
-│   ├── types.ts                         # 全專案 TypeScript Strict 型別定義
+│   ├── tools.ts                         # 核心工具實作、按意圖動態掛載與自訂插件沙盒派發器
+│   ├── types.ts                         # 全專案 TypeScript Strict 型別與 .html/.css 模組宣告
 │   ├── upgrader.ts                      # 自我升級任務派發器與核心保護工具清單
 │   ├── ui.ts                            # PWA HTML 組裝入口（核心受保護）
-│   ├── ui/                              # 可由自我升級維護的模組化前端
-│   │   ├── body.ts                      # HTML 結構與各功能 Modal
-│   │   ├── styles.ts                    # 響應式樣式與情緒／日夜主題動畫
-│   │   └── script.ts                    # 前端狀態管理、互動邏輯與進度輪詢
+│   ├── ui/                              # 按功能垂直模組化的前端子資料夾（可由自我升級維護）
+│   │   ├── ui-module-types.ts           # UI 功能模組共用介面定義
+│   │   ├── core/                        # 核心骨架、聊天、貼圖、設定彈窗與狀態同步
+│   │   │   ├── header.html
+│   │   │   ├── main.html
+│   │   │   ├── footer.html
+│   │   │   ├── modal.html
+│   │   │   ├── styles.css
+│   │   │   └── service.ts
+│   │   ├── upgrade/                     # 頂部進度條與 Log Cabin 升級日誌面板
+│   │   │   ├── top.html
+│   │   │   ├── styles.css
+│   │   │   └── service.ts
+│   │   ├── proactive/                   # 主動關懷氣泡與排程管理面板
+│   │   │   ├── top.html
+│   │   │   ├── modal.html
+│   │   │   ├── styles.css
+│   │   │   └── service.ts
+│   │   ├── care-game/                   # 點心餵食、猜拳與 10 秒接愛心小遊戲
+│   │   │   ├── modal.html
+│   │   │   ├── styles.css
+│   │   │   └── service.ts
+│   │   └── diary-persona/               # 桌寵日記時間軸與四軸性格演化面板
+│   │       ├── modal.html
+│   │       ├── styles.css
+│   │       └── service.ts
 │   └── plugins/                         # 可由自我升級維護的插件沙盒
 │       ├── registry.ts                  # 插件註冊表（禁止刪除）
 │       ├── lifecycle.ts                 # 每小時生理時鐘作息與無聊度規則（禁止刪除）
+│       ├── stickers.ts                  # 貼圖註冊表與提示目錄（禁止刪除）
 │       ├── github-actions-upgrade-status.ts  # 查詢 GitHub Actions 升級詳情、Annotations 與判決
 │       ├── proactive-messages.ts        # 主動關懷排程與雙源升級完成追蹤
 │       └── pet-care-game.ts             # 餵食點心、猜拳與點擊接愛心小遊戲

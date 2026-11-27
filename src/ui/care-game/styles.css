@@ -1,0 +1,79 @@
+.care-hero {
+      background: linear-gradient(135deg, #1b1f33, #232946);
+      border: 1px solid #343d63;
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: relative;
+      overflow: hidden;
+    }
+    .care-stage-avatar {
+      width: 58px; height: 58px; border-radius: 50%;
+      background: rgba(108, 92, 231, 0.25);
+      border: 2px solid #7c6ff7;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 30px; flex-shrink: 0;
+      transition: transform 0.25s ease;
+    }
+    .care-stage-avatar.anim { transform: scale(1.25) rotate(-8deg); }
+    .care-bars { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .care-bar-row { display: flex; flex-direction: column; gap: 3px; }
+    .care-bar-label {
+      display: flex; justify-content: space-between; font-size: 12px; color: #cfd5e6;
+    }
+    .care-bar-track {
+      height: 8px; background: #0f111a; border-radius: 99px; overflow: hidden; border: 1px solid #2b324d;
+    }
+    .care-bar-fill {
+      height: 100%; border-radius: 99px; transition: width 0.35s ease;
+    }
+    .care-bar-fill.energy { background: linear-gradient(90deg, #00b894, #55efc4); }
+    .care-bar-fill.affection { background: linear-gradient(90deg, #fd79a8, #ff7675); }
+    .care-feedback {
+      background: #121521; border: 1px solid #2b324d; border-radius: 10px;
+      padding: 9px 11px; font-size: 12px; color: #e6e8f0; min-height: 38px;
+      display: flex; align-items: center; line-height: 1.4;
+    }
+    .snack-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .snack-card {
+      background: #121521; border: 1px solid #2b324d; border-radius: 10px;
+      padding: 10px 8px; display: flex; flex-direction: column; align-items: center;
+      gap: 4px; cursor: pointer; text-align: center; transition: border-color 0.2s, transform 0.15s;
+    }
+    .snack-card:hover:not(:disabled) { border-color: #7c6ff7; transform: translateY(-2px); }
+    .snack-card:disabled { opacity: 0.5; cursor: not-allowed; }
+    .snack-emoji { font-size: 24px; }
+    .snack-name { font-size: 12px; font-weight: 600; color: #e6e8f0; }
+    .snack-boost { font-size: 11px; color: #55efc4; }
+    .game-tabs { display: flex; gap: 6px; margin-bottom: 6px; }
+    .game-tab {
+      flex: 1; background: #121521; color: #9aa3bd; border: 1px solid #282f47;
+      border-radius: 8px; padding: 7px; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .game-tab.active { background: #262c47; color: #fff; border-color: #6c5ce7; }
+    .game-box {
+      background: #121521; border: 1px solid #282f47; border-radius: 10px;
+      padding: 12px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .rps-row { display: flex; gap: 8px; justify-content: center; }
+    .rps-btn {
+      flex: 1; background: #1d2236; color: #fff; border: 1px solid #353e61;
+      border-radius: 10px; padding: 10px 6px; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: border-color 0.2s, transform 0.15s;
+    }
+    .rps-btn:hover:not(:disabled) { border-color: #a29bfe; transform: scale(1.04); }
+    .rps-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .heart-arena {
+      position: relative; height: 140px; background: #0c0e17;
+      border: 1px dashed #353e61; border-radius: 10px; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      user-select: none;
+    }
+    .heart-target {
+      position: absolute; font-size: 24px; cursor: pointer;
+      background: none; border: none; padding: 4px;
+      transition: transform 0.1s ease;
+    }
+    .heart-target:active { transform: scale(1.35); }

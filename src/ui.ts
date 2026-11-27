@@ -1,6 +1,37 @@
-import { UI_BODY } from './ui/body';
-import { UI_SCRIPT } from './ui/script';
-import { UI_STYLES } from './ui/styles';
+import { moduleCareGame } from './ui/care-game/service';
+import { moduleCore } from './ui/core/service';
+import { moduleDiaryPersona } from './ui/diary-persona/service';
+import { moduleProactive } from './ui/proactive/service';
+import type { UiFeatureModule } from './ui/ui-module-types';
+import { moduleUpgrade } from './ui/upgrade/service';
+
+const FEATURE_MODULES: UiFeatureModule[] = [
+  moduleCore,
+  moduleUpgrade,
+  moduleProactive,
+  moduleCareGame,
+  moduleDiaryPersona,
+];
+
+const UI_STYLES: string = FEATURE_MODULES.map((m) => m.styles).join('\n');
+
+const UI_TOP_SLOTS: string = FEATURE_MODULES.map((m) => m.topHtml ?? '')
+  .filter(Boolean)
+  .join('\n');
+
+const UI_MODAL_SLOTS: string = FEATURE_MODULES.map((m) => m.modalHtml ?? '')
+  .filter(Boolean)
+  .join('\n');
+
+const UI_BODY: string = [
+  moduleCore.headerHtml,
+  UI_TOP_SLOTS,
+  moduleCore.mainHtml,
+  moduleCore.footerHtml,
+  UI_MODAL_SLOTS,
+].join('\n');
+
+const UI_SCRIPT: string = FEATURE_MODULES.map((m) => m.script).join('\n');
 
 export const CHAT_HTML: string = `<!DOCTYPE html>
 <html lang="zh-Hant">

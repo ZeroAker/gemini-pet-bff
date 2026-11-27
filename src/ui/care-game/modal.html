@@ -1,0 +1,84 @@
+<div class="modal" id="careGameModal">
+    <div class="modal-card wide">
+      <h3>🎮 桌寵餵食與互動小遊戲</h3>
+      <div class="care-hero">
+        <div class="care-stage-avatar" id="careStageAvatar">😸</div>
+        <div class="care-bars">
+          <div class="care-bar-row">
+            <div class="care-bar-label">
+              <span>⚡ 活力值 (Energy)</span>
+              <strong id="careEnergyText">75 / 100</strong>
+            </div>
+            <div class="care-bar-track">
+              <div class="care-bar-fill energy" id="careEnergyBar" style="width:75%;"></div>
+            </div>
+          </div>
+          <div class="care-bar-row">
+            <div class="care-bar-label">
+              <span>💖 好感度 (Affection)</span>
+              <strong id="careAffectionText">60 / 100</strong>
+            </div>
+            <div class="care-bar-track">
+              <div class="care-bar-fill affection" id="careAffectionBar" style="width:60%;"></div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:#a29bfe;margin-top:2px;" id="careMoodText">狀態：活力充沛・心情愉快</div>
+        </div>
+      </div>
+
+      <div class="care-feedback" id="careFeedbackBox">點選下方點心餵食桌寵，或陪桌寵玩場小遊戲補充活力吧！✨</div>
+
+      <div>
+        <label style="margin-bottom:6px;">🍙 點心餵食區（點擊餵食補充活力）</label>
+        <div class="snack-grid">
+          <button class="snack-card" id="feedFishBtn">
+            <span class="snack-emoji">🐟</span>
+            <span class="snack-name">香烤小魚乾</span>
+            <span class="snack-boost">活力 +15 · 好感 +3</span>
+          </button>
+          <button class="snack-card" id="feedCakeBtn">
+            <span class="snack-emoji">🍰</span>
+            <span class="snack-name">草莓蛋糕</span>
+            <span class="snack-boost">活力 +25 · 好感 +5</span>
+          </button>
+          <button class="snack-card" id="feedCoffeeBtn">
+            <span class="snack-emoji">☕</span>
+            <span class="snack-name">特調咖啡</span>
+            <span class="snack-boost">活力 +35 · 好感 +4</span>
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <label style="margin-bottom:6px;">🎲 互動小遊戲區</label>
+        <div class="game-tabs">
+          <button class="game-tab active" id="tabRpsBtn">✊✌️🖐️ 猜拳大作戰</button>
+          <button class="game-tab" id="tabHeartsBtn">💖 點擊接愛心</button>
+        </div>
+
+        <div class="game-box" id="gameRpsPanel">
+          <div style="font-size:12px;color:#cfd5e6;text-align:center;" id="rpsStatusText">選擇你要出的拳，跟桌寵一決高下吧！</div>
+          <div class="rps-row">
+            <button class="rps-btn" id="rpsRockBtn">✊ 石頭</button>
+            <button class="rps-btn" id="rpsScissorsBtn">✌️ 剪刀</button>
+            <button class="rps-btn" id="rpsPaperBtn">🖐️ 布</button>
+          </div>
+        </div>
+
+        <div class="game-box" id="gameHeartsPanel" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#cfd5e6;">
+            <span id="heartTimerText">限時：10 秒</span>
+            <span id="heartScoreText">接到愛心：0 顆</span>
+          </div>
+          <div class="heart-arena" id="heartArena">
+            <button class="btn-primary" id="startHeartGameBtn">▶️ 開始 10 秒接愛心挑戰</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-icon" id="shareCareChatBtn">💬 讓桌寵回應這次互動</button>
+        <button class="btn-icon" id="closeCareModalBtn">關閉</button>
+      </div>
+    </div>
+  </div>

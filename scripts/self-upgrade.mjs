@@ -156,8 +156,9 @@ function normalizeRelPath(inputPath) {
 }
 
 function isEditablePath(relPath) {
+  if (!relPath || relPath.includes('..')) return false;
   if (relPath === 'src/ui.ts') return true;
-  if (/^src\/ui\/[a-z][a-z0-9-]*\.ts$/.test(relPath)) return true;
+  if (/^src\/ui\/[a-z][a-z0-9-]*(\/[a-z][a-z0-9-]*)?\.(ts|html|css)$/.test(relPath)) return true;
   if (/^src\/plugins\/[a-z][a-z0-9-]*\.ts$/.test(relPath)) return true;
   return false;
 }
@@ -168,6 +169,24 @@ function isReadablePath(relPath) {
 
 function isUiPath(relPath) {
   return relPath === 'src/ui.ts' || relPath.startsWith('src/ui/');
+}
+
+function collectUiFilesRecursive(dirAbs, baseRel = 'src/ui') {
+  const results = [];
+  if (!fs.existsSync(dirAbs) || !fs.statSync(dirAbs).isDirectory()) return results;
+  const entries = fs.readdirSync(dirAbs, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
+  for (const entry of entries) {
+    const rel = `${baseRel}/${entry.name}`;
+    const abs = path.join(dirAbs, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...collectUiFilesRecursive(abs, rel));
+    } else if (entry.isFile() && /\.(ts|html|css)$/.test(entry.name) && isEditablePath(rel)) {
+      results.push(rel);
+    }
+  }
+  return results;
 }
 
 function listProjectFiles() {
@@ -184,18 +203,14 @@ function listProjectFiles() {
   }
 
   const uiDir = path.resolve('src/ui');
-  if (fs.existsSync(uiDir) && fs.statSync(uiDir).isDirectory()) {
-    for (const name of fs.readdirSync(uiDir).sort()) {
-      if (name.endsWith('.ts')) editable.push(`src/ui/${name}`);
-    }
-  }
+  editable.push(...collectUiFilesRecursive(uiDir, 'src/ui'));
 
   const readOnly = READ_ONLY_CORE_FILES.filter((p) => fs.existsSync(path.resolve(p)));
   return { editable_files: editable, read_only_reference_files: readOnly };
 }
 
 function validateFileSecurity(relPath, content) {
-  if (/\b(eval|new Function)\b/.test(content)) {
+  if (/\.(ts|js|html)$/.test(relPath) && /\b(eval|new Function)\b/.test(content)) {
     throw new Error(`安全攔截：${relPath} 包含不允許的動態執行語法 (eval / new Function)`);
   }
   const coreNameRegex = new RegExp(`name\\s*:\\s*['"](${PROTECTED_CORE_TOOLS.join('|')})['"]`);
@@ -223,7 +238,14 @@ function validateWorkspaceUi() {
       throw new Error(`安全攔截：UI 模組禁止引入外部套件 (${specifier})`);
     }
     const base = path.resolve(path.dirname(fromFile), specifier);
-    const candidates = [base, `${base}.ts`, path.join(base, 'index.ts')];
+    const candidates = [
+      base,
+      `${base}.ts`,
+      `${base}.html`,
+      `${base}.css`,
+      path.join(base, 'service.ts'),
+      path.join(base, 'index.ts'),
+    ];
     const found = candidates.find((p) => fs.existsSync(p) && fs.statSync(p).isFile());
     if (!found) {
       throw new Error(
@@ -243,6 +265,13 @@ function validateWorkspaceUi() {
     if (moduleCache.has(absFile)) return moduleCache.get(absFile).exports;
 
     const source = fs.readFileSync(absFile, 'utf8');
+
+    // 原生 .html 與 .css 資源檔直接以 UTF-8 字串匯出（相容 ES default import 與 CJS require）
+    if (absFile.endsWith('.html') || absFile.endsWith('.css')) {
+      moduleCache.set(absFile, { exports: source });
+      return source;
+    }
+
     const transpiled = ts.transpileModule(source, {
       reportDiagnostics: true,
       compilerOptions: {
@@ -1076,12 +1105,13 @@ function buildSystemPrompt() {
     '【最高安全與核心保護規則】',
     `1. 絕對不可損害或刪除核心功能（核心工具包含：${PROTECTED_CORE_TOOLS.join(', ')}，以及對話記憶、路由、自我升級本身）。`,
     '2. 若主人要求刪除或破壞核心功能，請直接呼叫 reject_upgrade 說明原因。',
-    '3. 可編輯路徑僅限：src/plugins/[a-z][a-z0-9-]*.ts、src/ui.ts、src/ui/[a-z][a-z0-9-]*.ts。嚴禁刪除 src/plugins/registry.ts 與 src/ui.ts。',
+    '3. 可編輯路徑僅限：src/plugins/[a-z][a-z0-9-]*.ts、src/ui.ts、src/ui/[a-z][a-z0-9-]*(/[a-z][a-z0-9-]*)?.(ts|html|css)。嚴禁刪除 src/plugins/registry.ts 與 src/ui.ts。',
     '4. 唯讀參考檔案（src/types.ts、src/index.ts、src/tools.ts 等）僅供閱讀對齊 API 與型別，不可修改。',
     '5. 新增或刪除插件時，必須同步更新 src/plugins/registry.ts，確保所有 import 與 CUSTOM_PLUGINS 陣列一致。',
     '6. 後端僅能使用標準 Web API（fetch、URL、Intl、crypto）與純 TypeScript strict mode（無 any、無未使用變數、不新增外部 npm 套件）。',
     '7. UI 介面規範：',
-    '   - src/ui.ts 必須匯出完整 HTML 字串 `export const CHAT_HTML: string`（可拆檔到 src/ui/*.ts 再由 src/ui.ts 相對 import 組裝）。',
+    '   - src/ui.ts 必須匯出完整 HTML 字串 `export const CHAT_HTML: string`。',
+    '   - 目前 src/ui/ 已按功能垂直拆分為獨立子資料夾（`src/ui/core/`、`src/ui/upgrade/`、`src/ui/proactive/`、`src/ui/care-game/`、`src/ui/diary-persona/`），每個資料夾內各自包含原生 `.html`、`.css` 與 `service.ts`，再由 `src/ui.ts` 統一引入組裝；日後修改單一功能 UI 時，只需定位並修改對應資料夾內的 `.html`、`.css` 或 `service.ts`，無需讀取無關模組。',
     '   - 組裝後的 HTML 必須保留 `/v1/pet/interact`、`/v1/pet/upgrade/status`、Token 設定彈窗與 localStorage (`pet_bff_token`, `pet_user_id`)。',
     '   - 模板字串內嵌 JS 優先用單引號與字串拼接，避免反引號或 `${` 跳脫失誤。',
     '8. src/plugins/lifecycle.ts 為每小時 Cron 生理時鐘規則檔，嚴禁刪除且必須保留 export function computeNextLifecycleState(state: PetState, ctx: LifecycleContext): PetState。',
@@ -1089,8 +1119,8 @@ function buildSystemPrompt() {
     '10. src/plugins/stickers.ts 為貼圖註冊表，嚴禁刪除且必須保留 STICKER_PACK 與相關匯出函式；不可修改或刪除 public/stickers/ 內圖片，但可依主人需求微調 bot_hint、meaning、category 或 enabled。',
     '',
     '【高效多步工作流】',
-    '1. 先檢視與需求直接相關的檔案（若要新增插件先看 src/types.ts 與 src/plugins/registry.ts；若改 UI 先看 src/ui.ts 或 src/ui/*）。',
-    '2. 面對大型檔案（如 src/ui/script.ts、src/plugins/proactive-messages.ts 等超過 150 行的檔案），必須先使用 search_in_file 搜尋關鍵字定位行號，再用 read_file 指定 start_line / end_line 局部讀取目標區段，接著以 patch_file 精準修改，避免整檔讀取浪費 Token。',
+    '1. 先檢視與需求直接相關的檔案（若要新增插件先看 src/types.ts 與 src/plugins/registry.ts；若改 UI 單一功能只需讀取對應的 src/ui/<module>/ 資料夾內檔案）。',
+    '2. 面對大型檔案（如 src/ui/core/service.ts、src/plugins/proactive-messages.ts 等超過 150 行的檔案），必須先使用 search_in_file 搜尋關鍵字定位行號，再用 read_file 指定 start_line / end_line 局部讀取目標區段，接著以 patch_file 精準修改，避免整檔讀取浪費 Token。',
     '3. 小範圍修改優先使用 patch_file；新增檔案或大重構（例如 UI 拆檔）使用 write_file。',
     '4. 完成所有檔案變更後，必須呼叫 run_checks 驗證安全性、UI 沙盒與 TypeScript 編譯；若報錯請立即針對錯誤行數修復並重跑 run_checks。',
     '5. 確認 run_checks 全數通過後，呼叫 finish_upgrade 結束任務並提供簡短繁體中文 summary。',

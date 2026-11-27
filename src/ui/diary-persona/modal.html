@@ -1,0 +1,99 @@
+<div class="modal" id="diaryPersonaModal">
+    <div class="modal-card wide">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <h3>📖 日記與性格</h3>
+        <button class="btn-sm" id="closeDiaryPersonaTopBtn" type="button">✕ 關閉</button>
+      </div>
+
+      <div class="diary-persona-tabs">
+        <button class="diary-persona-tab active" id="tabDiaryBtn" type="button">📖 日記本</button>
+        <button class="diary-persona-tab" id="tabPersonaBtn" type="button">🌱 性格演化</button>
+      </div>
+
+      <div class="diary-status-banner" id="diaryPersonaNotice" style="display:none;"></div>
+
+      <div id="diaryTabPanel" class="diary-tab-panel">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <span style="font-size:12px;color:#9aa3bd;" id="diaryCountLabel">桌寵的每日夢境與生活紀錄</span>
+          <button class="btn-sm" id="refreshDiariesBtn" type="button">🔄 重新整理</button>
+        </div>
+        <div class="diary-timeline" id="diaryTimelineList">
+          <div class="diary-empty-state">⏳ 正在載入日記本...</div>
+        </div>
+      </div>
+
+      <div id="personaTabPanel" class="persona-tab-panel" style="display:none;">
+        <div class="persona-actions-bar">
+          <button class="btn-sm" id="rollbackPersonaBtn" type="button">↩️ 還原上一版性格</button>
+          <button class="btn-sm ai-active" id="triggerDreamBtn" type="button">🌙 立即發夢</button>
+          <button class="btn-sm" id="refreshPersonaBtn" type="button" style="margin-left:auto;">🔄 重新整理</button>
+        </div>
+
+        <div class="persona-section">
+          <div class="persona-section-head">
+            <span class="persona-section-title">📊 性格演化數值 (0 - 100)</span>
+            <span class="persona-meta-note" id="personaUpdatedLabel"></span>
+          </div>
+          <div class="persona-traits-grid">
+            <div class="persona-trait-row">
+              <div class="persona-trait-label">
+                <span>💗 溫柔</span>
+                <strong id="traitWarmthVal">70 / 100</strong>
+              </div>
+              <div class="persona-trait-track">
+                <div class="persona-trait-fill warmth" id="traitWarmthFill" style="width:70%;"></div>
+              </div>
+            </div>
+            <div class="persona-trait-row">
+              <div class="persona-trait-label">
+                <span>🐾 俏皮</span>
+                <strong id="traitPlayfulnessVal">65 / 100</strong>
+              </div>
+              <div class="persona-trait-track">
+                <div class="persona-trait-fill playfulness" id="traitPlayfulnessFill" style="width:65%;"></div>
+              </div>
+            </div>
+            <div class="persona-trait-row">
+              <div class="persona-trait-label">
+                <span>😼 吐槽</span>
+                <strong id="traitTeasingVal">35 / 100</strong>
+              </div>
+              <div class="persona-trait-track">
+                <div class="persona-trait-fill teasing" id="traitTeasingFill" style="width:35%;"></div>
+              </div>
+            </div>
+            <div class="persona-trait-row">
+              <div class="persona-trait-label">
+                <span>💬 詳盡</span>
+                <strong id="traitChattinessVal">55 / 100</strong>
+              </div>
+              <div class="persona-trait-track">
+                <div class="persona-trait-fill chattiness" id="traitChattinessFill" style="width:55%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="persona-section">
+          <div class="persona-section-title">🏷️ 共同梗標籤 (Tags)</div>
+          <div class="persona-tags-wrap" id="personaTagsList">
+            <span class="persona-empty-inline">載入中...</span>
+          </div>
+        </div>
+
+        <div class="persona-section">
+          <div class="persona-section-title">💝 對主人的印象</div>
+          <div class="persona-text-box" id="personaBondNote">載入中...</div>
+        </div>
+
+        <div class="persona-section">
+          <div class="persona-section-title">📸 近期近況快照</div>
+          <div class="persona-text-box" id="personaRecentSnapshot">載入中...</div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-icon" id="closeDiaryPersonaModalBtn" type="button">關閉</button>
+      </div>
+    </div>
+  </div>

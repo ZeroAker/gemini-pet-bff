@@ -1,0 +1,64 @@
+<div class="modal" id="proactiveModal">
+    <div class="modal-card wide">
+      <h3>🔔 主動訊息排程面板</h3>
+      <div class="proactive-top-row">
+        <div>
+          <div style="font-size:13px;font-weight:600;" id="proactiveGlobalLabel">主動關懷總開關：啟用中</div>
+          <div style="font-size:11px;color:#9aa3bd;" id="proactiveIdleInfo">每 30 秒自動檢查到期排程與閒置狀態</div>
+        </div>
+        <div class="proactive-top-actions">
+          <button class="btn-icon" id="toggleSysNotifyBtn">系統通知：關閉</button>
+          <button class="btn-icon" id="toggleGlobalProactiveBtn">切換總開關</button>
+        </div>
+      </div>
+
+      <div class="proactive-form">
+        <div class="proactive-form-row">
+          <div>
+            <label>排程標題（主題）</label>
+            <input id="ruleTitleInput" type="text" placeholder="例如：喝水提醒" />
+          </div>
+          <div>
+            <label>類型</label>
+            <select id="ruleTypeSelect">
+              <option value="daily">每日固定時間 (daily)</option>
+              <option value="interval">固定間隔分鐘 (interval)</option>
+              <option value="idle">閒置觸發分鐘 (idle)</option>
+            </select>
+          </div>
+        </div>
+        <div class="proactive-form-row">
+          <div id="ruleTimeWrap">
+            <label>每日時間 (HH:mm)</label>
+            <input id="ruleTimeInput" type="text" value="09:00" placeholder="09:00" />
+          </div>
+          <div id="ruleIntervalWrap" style="display:none;">
+            <label>分鐘數 (正整數)</label>
+            <input id="ruleIntervalInput" type="number" min="1" max="10080" value="60" />
+          </div>
+        </div>
+        <div>
+          <label>提醒訊息內容（開啟 AI 生成時作為參考提示與備用內容）</label>
+          <input id="ruleMsgInput" type="text" placeholder="主人～記得喝口水休息一下喔！" />
+        </div>
+        <label class="proactive-ai-check" for="ruleAiGenInput">
+          <input id="ruleAiGenInput" type="checkbox" />
+          <span>✨ 每次由 AI 隨機生成主題句子（依標題與提示即時生成，失敗時退回原訊息）</span>
+        </label>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:2px;">
+          <button class="btn-icon" id="testProactiveBubbleBtn">立即檢查到期</button>
+          <button class="btn-primary" id="addRuleBtn">＋ 新增排程</button>
+        </div>
+      </div>
+
+      <div>
+        <label style="margin-bottom:6px;">目前排程列表</label>
+        <div class="rule-list" id="proactiveRuleList"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-icon" id="syncProactiveCloudBtn">☁️ 同步至雲端工具</button>
+        <button class="btn-icon" id="closeProactiveModalBtn">關閉</button>
+      </div>
+    </div>
+  </div>

@@ -19,3 +19,8 @@ crons = ["0 * * * *"]
 
 [assets]
 directory = "./public"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html", "**/*.css"]
+fallthrough = true

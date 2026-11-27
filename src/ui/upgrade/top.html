@@ -1,0 +1,22 @@
+<div id="titleProgressSlot" class="header-progress-slot">
+    <div id="upgradeProgressContainer" class="upgrade-progress-wrap" title="點擊切換 Log Cabin（升級日誌面板）">
+      <div class="upgrade-progress-info">
+        <span id="upgradeProgressStatus" class="upgrade-progress-status">升級狀態：待機中</span>
+        <span id="upgradeProgressPercent" class="upgrade-progress-percent">0%</span>
+      </div>
+      <div class="upgrade-progress-track">
+        <div id="upgradeProgressFill" class="upgrade-progress-fill idle" style="width: 0%;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="upgradeBar">
+    <div class="upgrade-header">
+      <strong id="upgradeTitle">🪵 Log Cabin · 升級日誌面板</strong>
+      <button class="btn-icon" id="closeUpgradeBar" style="padding:2px 8px;font-size:11px;">隱藏</button>
+    </div>
+    <div id="upgradeVerdictDetail" class="upgrade-verdict-detail" style="display:none;"></div>
+    <pre id="upgradeLogs" style="white-space:pre-wrap;font-family:monospace;color:#9aa3bd;max-height:120px;overflow-y:auto;line-height:1.4;"></pre>
+    <div id="upgradeLink" style="margin-top:6px;"></div>
+    <div id="cabinProgressSlot" class="cabin-progress-slot"></div>
+  </div>
