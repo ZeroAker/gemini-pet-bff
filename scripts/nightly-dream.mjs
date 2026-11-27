@@ -1,6 +1,6 @@
 const MODEL_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_DAILY_TRAIT_DELTA = 5;
-const MAX_INBOX_FOR_LLM = 120;
+const MAX_INBOX_FOR_LLM = 60;
 const MAX_DIARIES = 60;
 const MAX_PERSONA_HISTORY = 7;
 const VALID_MOODS = new Set(['idle', 'happy', 'thinking', 'sleepy', 'caring']);
@@ -8,7 +8,7 @@ const VALID_MOODS = new Set(['idle', 'happy', 'thinking', 'sleepy', 'caring']);
 const apiKey = (process.env.GOOGLE_CLOUD_API_KEY || '').trim();
 const projectId = (process.env.GCP_PROJECT_ID || '').trim();
 const location = (process.env.GCP_LOCATION || 'global').trim();
-const primaryModel = (process.env.MODEL_DREAMER || 'gemini-4-argon').trim();
+const primaryModel = (process.env.MODEL_DREAMER || 'gemini-4-hydrogen').trim();
 const redisUrl = (process.env.UPSTASH_REDIS_REST_URL || '').trim();
 const redisToken = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
 const mem0ApiKey = (process.env.MEM0_API_KEY || '').trim();
@@ -233,7 +233,7 @@ async function generateDreamOutput(contextPayload) {
     const generationConfig = model.startsWith('gemini-4')
       ? {
           responseMimeType: 'application/json',
-          thinkingConfig: { thinkingLevel: 'HIGH' },
+          thinkingConfig: { thinkingLevel: 'MEDIUM' },
         }
       : {
           responseMimeType: 'application/json',
@@ -358,7 +358,7 @@ async function processUser(userId, todayHK) {
     existing_mem0_memories: mem0Memories,
     todays_conversations: slicedMessages.map((m) => ({
       role: m.role,
-      content: m.content,
+      content: m.content.slice(0, 300),
     })),
   });
 

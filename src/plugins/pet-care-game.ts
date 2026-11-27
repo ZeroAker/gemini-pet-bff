@@ -110,34 +110,33 @@ function getRemainingCooldownSec(lastIso: string | null, cooldownSec: number, no
 export const petCareGamePlugin: PluginTool = {
   declaration: {
     name: 'manage_pet_care_game',
-    description:
-      '管理桌寵的餵食點心與互動小遊戲，並直接同步雲端主狀態（活力值、好感度、心情與無聊度）。支援查詢狀態(status)、餵食點心如小魚乾/草莓蛋糕/特調咖啡(feed)、以及進行猜拳大作戰或點擊接愛心小遊戲(play_game)。',
+    description: '管理桌寵餵食與小遊戲並同步活力/好感度（status/feed/play_game）。',
     parameters: {
       type: 'OBJECT',
       properties: {
         action: {
           type: 'STRING',
-          description: '操作類型：status（查詢活力與紀錄）| feed（餵食點心）| play_game（進行或結算小遊戲）',
+          description: 'status | feed | play_game',
         },
         snack_id: {
           type: 'STRING',
-          description: '餵食點心類型（用於 feed）：dried_fish（香烤小魚乾）、strawberry_cake（草莓鮮奶油蛋糕）、special_coffee（星光特調咖啡）',
+          description: 'dried_fish | strawberry_cake | special_coffee（feed 用）',
         },
         game_type: {
           type: 'STRING',
-          description: '小遊戲類型（用於 play_game）：rps（猜拳大作戰）| catch_hearts（點擊接愛心）',
+          description: 'rps | catch_hearts（play_game 用）',
         },
         player_choice: {
           type: 'STRING',
-          description: '猜拳時主人的出拳（選填，用於 rps）：rock（石頭）| paper（布）| scissors（剪刀）',
+          description: 'rock | paper | scissors（rps 選填）',
         },
         game_result: {
           type: 'STRING',
-          description: '前端小遊戲結算結果（選填）：win | draw | lose',
+          description: 'win | draw | lose（選填）',
         },
         score: {
           type: 'STRING',
-          description: '小遊戲得分或接到的愛心數量（選填，正整數字串，例如 "12"）',
+          description: '得分或愛心數（正整數字串，選填）',
         },
       },
       required: ['action'],

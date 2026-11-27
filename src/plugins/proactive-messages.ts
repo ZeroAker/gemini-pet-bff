@@ -2161,113 +2161,113 @@ export const proactiveMessagesPlugin: PluginTool = {
   declaration: {
     name: 'manage_proactive_messages',
     description:
-      '管理桌寵的主動訊息、定時提醒、閒置關懷排程，以及自我升級（KV latest_upgrade 與 GitHub Actions self-upgrade-runner.yml 雙源交叉校準，支援 retry 重試機制）的完成/失敗/取消主動回報追蹤。支援新增排程(add)、列出所有排程與升級追蹤狀態(list)、啟用或停用排程/總開關(toggle)、切換 AI 隨機生成(toggle_ai)、刪除排程(delete)、登記追蹤自我升級任務(track_upgrade，會自動從 latest_upgrade.actions_url 解析並綁定具體 run_id、run_attempt 與 started_at)、以及檢查到期主動訊息與升級結果(check_due，雙源交叉校準 KV latest_upgrade 與 GitHub Actions Run/Job API，當 workflow 仍處於 queued/in_progress/waiting/pending 或重試中時持續等待不提早誤判失敗，遇到 403/rate limit 自動降級容錯，並以 reportedRunKeys 防止重複通知)。',
+      '管理主動訊息、定時/閒置提醒排程與自我升級追蹤回報（add/list/toggle/toggle_ai/delete/track_upgrade/check_due）。',
     parameters: {
       type: 'OBJECT',
       properties: {
         action: {
           type: 'STRING',
-          description: '操作類型：add | list | toggle | toggle_ai | delete | track_upgrade | check_due',
+          description: 'add | list | toggle | toggle_ai | delete | track_upgrade | check_due',
         },
         rule_id: {
           type: 'STRING',
-          description: '指定操作的排程 ID 或標題（用於 toggle、toggle_ai 或 delete；若 toggle 時不填或填 global 則切換整體主動訊息總開關）。',
+          description: '排程 ID 或標題（toggle 留空或 global 表總開關）',
         },
         title: {
           type: 'STRING',
-          description: '排程標題／主題（用於 add，例如「早安問候」、「喝水提醒」）。',
+          description: '排程標題（add 用）',
         },
         message: {
           type: 'STRING',
-          description: '主動訊息內容，或開啟 AI 隨機生成時的參考提示／備用內容（用於 add）。',
+          description: '提醒內容或 AI 生成提示（add 用）',
         },
         schedule_type: {
           type: 'STRING',
-          description: '排程類型：daily（每日固定時間）、interval（固定間隔分鐘數）、idle（閒置超過指定分鐘數觸發）。',
+          description: 'daily | interval | idle',
         },
         time: {
           type: 'STRING',
-          description: '每日觸發時間，格式為 24 小時制 HH:mm（例如 09:00、22:30，用於 schedule_type 為 daily 時）。',
+          description: '每日時間 HH:mm（daily 用）',
         },
         interval_minutes: {
           type: 'STRING',
-          description: '間隔或閒置分鐘數（正整數，例如 60，用於 schedule_type 為 interval 或 idle 時）。',
+          description: '間隔或閒置分鐘數（正整數）',
         },
         enabled: {
           type: 'STRING',
-          description: '是否啟用排程：true 或 false（用於 add 或 toggle）。',
+          description: 'true | false（啟用狀態）',
         },
         ai_generated: {
           type: 'STRING',
-          description: '是否每次由 AI 根據主題(title)與參考提示(message)隨機生成關懷句子：true 或 false（預設 false，用於 add、toggle 或 toggle_ai）。',
+          description: 'true | false（AI 隨機生成）',
         },
         timezone: {
           type: 'STRING',
-          description: '時區設定，預設為 Asia/Taipei。',
+          description: '時區，預設 Asia/Taipei',
         },
         idle_minutes: {
           type: 'STRING',
-          description: '選填，用於 check_due 時傳入目前使用者已閒置的分鐘數。',
+          description: '目前閒置分鐘數（check_due 選填）',
         },
         mark_triggered: {
           type: 'STRING',
-          description: '選填，用於 check_due 時是否自動將到期規則標記為已觸發（預設為 true）。',
+          description: 'true | false（check_due 標記已觸發，預設 true）',
         },
         actions_url: {
           type: 'STRING',
-          description: '自我升級 GitHub Actions 連結（用於 track_upgrade 或 check_due，例如 https://github.com/owner/repo/actions/runs/12345）。',
+          description: '升級 Actions 連結',
         },
         repo: {
           type: 'STRING',
-          description: 'GitHub 倉庫 owner/repo（用於 track_upgrade 或 check_due，預設為 ZeroAker/gemini-pet-bff）。',
+          description: '倉庫 owner/repo',
         },
         workflow_file: {
           type: 'STRING',
-          description: 'GitHub Actions workflow 檔名，預設為 self-upgrade-runner.yml。',
+          description: 'workflow 檔名，預設 self-upgrade-runner.yml',
         },
         run_id: {
           type: 'STRING',
-          description: '欲追蹤或檢查的 GitHub Actions Run ID。',
+          description: 'Actions Run ID',
         },
         run_attempt: {
           type: 'STRING',
-          description: '選填，GitHub Actions Workflow Run 的重試次數 (run_attempt，正整數如 1、2)。',
+          description: '重試次數（正整數，選填）',
         },
         pr_url: {
           type: 'STRING',
-          description: '選填，自我升級對應的 PR 連結。',
+          description: '升級 PR 連結（選填）',
         },
         upgrade_summary: {
           type: 'STRING',
-          description: '選填，本次自我升級的功能摘要說明（成功回報時會顯示）。',
+          description: '升級摘要（選填）',
         },
         upgrade_status: {
           type: 'STRING',
-          description: '選填，已知的自我升級狀態（如 running、merged、rejected、failed、cancelled、timed_out）。',
+          description: 'running | merged | rejected | failed | cancelled | timed_out',
         },
         upgrade_step: {
           type: 'STRING',
-          description: '選填，KV latest_upgrade.step 階段（如 initializing、merged、rejected、failed）。',
+          description: 'KV 升級階段（選填）',
         },
         upgrade_logs: {
           type: 'STRING',
-          description: '選填，KV latest_upgrade.logs 日誌內容（JSON 字串或換行分隔文字）。',
+          description: 'KV 升級日誌（選填）',
         },
         upgrade_error: {
           type: 'STRING',
-          description: '選填，已知的自我升級錯誤或拒絕原因說明。',
+          description: '升級錯誤或拒絕原因（選填）',
         },
         started_at: {
           type: 'STRING',
-          description: '選填，自我升級任務啟動時間（ISO 格式字串）。',
+          description: '升級啟動時間 ISO 字串（選填）',
         },
         latest_upgrade: {
           type: 'STRING',
-          description: '選填，從 check_upgrade_status 取得的 latest_upgrade JSON 字串或物件，用於雙源交叉校準。',
+          description: 'check_upgrade_status 的 latest_upgrade（選填）',
         },
         github_token: {
           type: 'STRING',
-          description: '選填，查詢私有倉庫或 Actions 原始錯誤 log 時使用的 GitHub Token。',
+          description: 'GitHub Token（私有庫選填）',
         },
       },
       required: ['action'],

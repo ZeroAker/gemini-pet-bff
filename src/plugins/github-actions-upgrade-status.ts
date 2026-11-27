@@ -349,31 +349,29 @@ function buildUpgradeVerdictSummary(
 export const githubActionsUpgradeStatusPlugin: PluginTool = {
   declaration: {
     name: 'fetch_upgrade_actions_status',
-    description:
-      '透過 GitHub API 讀取 GitHub Actions 中 Self-Upgrade Runner (self-upgrade-runner.yml) 最新或指定任務的執行狀態 (status/conclusion)、各步驟進度、錯誤註解與執行 log。建議先呼叫核心工具 check_upgrade_status 取得 actions_url，再將 actions_url 或 owner/repo 傳入本工具以準確回報升級詳情。',
+    description: '透過 GitHub API 查詢自我升級 Actions 執行狀態、步驟與錯誤 log。',
     parameters: {
       type: 'OBJECT',
       properties: {
         actions_url: {
           type: 'STRING',
-          description:
-            '從 check_upgrade_status 取得的 actions_url 或 GitHub Actions 任務連結（例如 https://github.com/owner/repo/actions/runs/12345），會自動解析 owner/repo 與 run_id。',
+          description: 'Actions 任務連結（自動解析 repo 與 run_id）',
         },
         repo: {
           type: 'STRING',
-          description: 'GitHub 倉庫名稱，格式為 owner/repo（若已提供有效的 actions_url 則可省略）。',
+          description: '倉庫 owner/repo（有 actions_url 可省）',
         },
         workflow_file: {
           type: 'STRING',
-          description: 'GitHub Actions workflow 檔案名稱，預設為 self-upgrade-runner.yml。',
+          description: 'workflow 檔名，預設 self-upgrade-runner.yml',
         },
         run_id: {
           type: 'STRING',
-          description: '指定查詢的 Workflow Run ID（選填，未填時自動查詢最新一筆任務）。',
+          description: '指定 Run ID（選填，預設最新）',
         },
         github_token: {
           type: 'STRING',
-          description: '選填的 GitHub Token（公開倉庫不填即可讀取任務狀態、步驟與錯誤註解；讀取原始純文字 log 或私有倉庫時可提供）。',
+          description: 'GitHub Token（私有庫或讀 log 選填）',
         },
       },
       required: [],

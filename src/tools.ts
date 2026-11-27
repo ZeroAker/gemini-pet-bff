@@ -1,30 +1,30 @@
 import { CUSTOM_PLUGINS } from './plugins/registry';
 import type { StateService } from './services';
-import type { Env, ToolDeclaration } from './types';
+import type { ComplexityTier, Env, ToolDeclaration } from './types';
 import { PROTECTED_CORE_TOOLS, SelfUpgradeService } from './upgrader';
 
 const CORE_TOOL_DECLARATIONS: ToolDeclaration[] = [
   {
     name: 'get_current_time',
-    description: '取得目前的準確日期、星期與時間（香港/台北時間 UTC+8）。',
+    description: '取得目前日期、星期與時間（UTC+8）。',
     parameters: { type: 'OBJECT', properties: {} },
   },
   {
     name: 'manage_todos',
-    description: '管理主人的跨裝置待辦清單（add/list/complete/delete）。',
+    description: '管理待辦清單（add/list/complete/delete）。',
     parameters: {
       type: 'OBJECT',
       properties: {
         action: { type: 'STRING', description: 'add | list | complete | delete' },
-        text: { type: 'STRING', description: '待辦事項內容（add 必填）' },
-        id: { type: 'STRING', description: '待辦事項 ID（complete 或 delete 必填）' },
+        text: { type: 'STRING', description: '待辦內容（add 必填）' },
+        id: { type: 'STRING', description: '待辦 ID（complete/delete 必填）' },
       },
       required: ['action'],
     },
   },
   {
     name: 'fetch_webpage',
-    description: '讀取指定網址(URL)的純文字內容以進行摘要或分析。',
+    description: '讀取指定 URL 純文字內容。',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -33,16 +33,15 @@ const CORE_TOOL_DECLARATIONS: ToolDeclaration[] = [
       required: ['url'],
     },
   },
-{
+  {
     name: 'request_self_upgrade',
-    description:
-      '當主人要求桌寵自我升級、新增/修改/刪除後端自訂功能插件，或是修改 PWA 前端 UI 介面（配色、排版、按鈕、互動元件、3D 模型顯示等）時呼叫。會在 GitHub Actions 執行安全檢查與自動部署，並保護核心功能不受損害。',
+    description: '要求桌寵自我升級、增刪改後端插件或修改 PWA 前端 UI。',
     parameters: {
       type: 'OBJECT',
       properties: {
         instruction: {
           type: 'STRING',
-          description: '清楚描述要修改的 UI 介面細節，或要新增、修改、刪除的功能規格',
+          description: '升級、插件或 UI 修改規格說明',
         },
       },
       required: ['instruction'],
@@ -50,7 +49,7 @@ const CORE_TOOL_DECLARATIONS: ToolDeclaration[] = [
   },
   {
     name: 'check_upgrade_status',
-    description: '查詢最近一次桌寵自我升級任務的執行進度、PR 連結或結果，也可列出目前已安裝的所有自訂插件。',
+    description: '查詢最近升級進度/PR 與已安裝自訂插件。',
     parameters: { type: 'OBJECT', properties: {} },
   },
 ];
@@ -59,8 +58,61 @@ const CORE_TOOL_DECLARATIONS: ToolDeclaration[] = [
 const CORE_NAME_SET = new Set<string>(PROTECTED_CORE_TOOLS);
 const SAFE_CUSTOM_PLUGINS = CUSTOM_PLUGINS.filter((p) => !CORE_NAME_SET.has(p.declaration.name));
 
+const ALWAYS_ON_CORE_TOOLS = new Set(['get_current_time', 'manage_todos', 'fetch_webpage']);
+const UPGRADE_TOOL_NAMES = new Set([
+  'request_self_upgrade',
+  'check_upgrade_status',
+  'fetch_upgrade_actions_status',
+]);
+const PET_CARE_TOOL_NAMES = new Set(['manage_pet_care_game']);
+const PROACTIVE_TOOL_NAMES = new Set(['manage_proactive_messages']);
+const SCOPED_TOOL_NAMES = new Set([
+  ...UPGRADE_TOOL_NAMES,
+  ...PET_CARE_TOOL_NAMES,
+  ...PROACTIVE_TOOL_NAMES,
+]);
+
+const UPGRADE_INTENT_PATTERN =
+  /升級|upgrade|新增功能|加一個|修改功能|刪除功能|移除功能|插件|plugin|進度|介面|ui|外觀|配色|主題|排版|按鈕|畫面|貼圖規則|作息規則|github|actions|workflow|\bpr\b|部署|deploy/i;
+const PET_CARE_INTENT_PATTERN =
+  /餵|吃|食|點心|零食|小魚乾|蛋糕|咖啡|肚子|餓|活力|能量|猜拳|石頭|剪刀|布|接愛心|愛心|小遊戲|玩遊戲|\bgame\b|\bfeed\b|\bsnack\b|\brps\b/i;
+const PROACTIVE_INTENT_PATTERN =
+  /提醒|排程|定時|鬧鐘|主動訊息|主動通知|閒置|追蹤升級|追蹤進度|回報升級|proactive|schedule|remind/i;
+const CORE_ONLY_INTENT_PATTERN =
+  /幾點|時間|日期|星期|\btime\b|待辦|todo|清單|記下|備忘|https?:\/\/|網頁|連結|網址|文章|摘要/i;
+
 export function getAllToolDeclarations(): ToolDeclaration[] {
   return [...CORE_TOOL_DECLARATIONS, ...SAFE_CUSTOM_PLUGINS.map((p) => p.declaration)];
+}
+
+export function getToolDeclarationsForIntent(
+  userMessage: string,
+  tier?: ComplexityTier
+): ToolDeclaration[] {
+  const allDeclarations = getAllToolDeclarations();
+  if (tier === 'complex') {
+    return allDeclarations;
+  }
+
+  const trimmed = userMessage.trim();
+  const wantsUpgrade = UPGRADE_INTENT_PATTERN.test(trimmed);
+  const wantsPetCare = PET_CARE_INTENT_PATTERN.test(trimmed);
+  const wantsProactive = PROACTIVE_INTENT_PATTERN.test(trimmed);
+  const wantsCoreOnly = CORE_ONLY_INTENT_PATTERN.test(trimmed);
+
+  // 無法明確分類時，安全回退掛載全部工具，避免漏判
+  if (!wantsUpgrade && !wantsPetCare && !wantsProactive && !wantsCoreOnly) {
+    return allDeclarations;
+  }
+
+  return allDeclarations.filter((decl) => {
+    if (ALWAYS_ON_CORE_TOOLS.has(decl.name)) return true;
+    if (UPGRADE_TOOL_NAMES.has(decl.name)) return wantsUpgrade;
+    if (PET_CARE_TOOL_NAMES.has(decl.name)) return wantsPetCare;
+    if (PROACTIVE_TOOL_NAMES.has(decl.name)) return wantsProactive;
+    // 其他未分類的未來自訂插件預設保留，避免影響後續自我升級擴充
+    return !SCOPED_TOOL_NAMES.has(decl.name);
+  });
 }
 
 export async function executeAgentTool(

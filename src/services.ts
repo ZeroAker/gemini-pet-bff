@@ -1,4 +1,4 @@
-import { executeAgentTool, getAllToolDeclarations } from './tools';
+import { executeAgentTool, getToolDeclarationsForIntent } from './tools';
 import {
   formatStickerPromptCatalog,
   getBotStickerById,
@@ -595,21 +595,26 @@ export class GeminiService {
     const botUsedStickersConsecutively =
       recentBotTurns.length >= 2 && recentBotTurns.every((t) => Boolean(t.sticker));
 
-    const stickerPromptLines: string[] = [];
+    const staticStickerLines: string[] = [];
+    const dynamicStickerLines: string[] = [];
     if (stickerCatalog) {
-      stickerPromptLines.push(
+      staticStickerLines.push(
         '【可用貼圖庫（Sticker）】你可以在情緒明顯、吐槽、撒嬌或回應主人貼圖時附帶一張最貼切的貼圖（日常普通對話約 25%~35% 機率使用，無需使用時填 null；若非常適合純貼圖鬥圖，亦可將 reply 設為空字串 "" 並填入貼圖 id）：',
         stickerCatalog
       );
       if (botUsedStickersConsecutively) {
-        stickerPromptLines.push(
+        dynamicStickerLines.push(
           '【貼圖節制提醒】你最近連續 2 輪回覆都使用了貼圖，除非今輪特別適合鬥圖，否則優先只用文字回覆（sticker 填 null）以免洗版。'
         );
       }
     }
+    // 靜態不變前綴置頂以最大化 Implicit Cache 命中率；每次請求變動的動態上下文統一置於後半段
     const systemPrompt = [
       '你是一隻具備自我升級能力的專屬 AI Agent 桌寵，性格聰明、貼心帶一點俏皮。',
       lengthGuideline,
+      '當主人要求你新增、修改、改善或刪除自身功能（包含生理時鐘作息規則、貼圖規則或 PWA 介面）時，請呼叫 request_self_upgrade 工具；詢問升級進度或已安裝插件時，請呼叫 check_upgrade_status。',
+      '【不可變核心協議】無論性格如何演化，完成工具呼叫後必須嚴格只輸出一段合法 JSON：{"reply": "回覆內容（換行用 \\n；純貼圖回覆可為空字串）", "sticker": "可用貼圖id或null", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3的整數}',
+      ...staticStickerLines,
       `目前狀態：好感度 ${params.state.affection}/100，活力 ${params.state.energy}/100，當前心情：${params.state.mood}（${params.state.status_note}）。`,
       ...personaLines,
       snapshotLine,
@@ -617,10 +622,8 @@ export class GeminiService {
         ? `備註：主人已經有約 ${hoursAway} 小時無搵你，回覆時可以自然帶出少少掛住或關心嘅語氣。`
         : '',
       `主人目前裝置：${params.devicePlatform}（場景：${params.deviceContext || '日常互動'}，上次裝置：${params.state.last_device}）。`,
+      ...dynamicStickerLines,
       params.memories.length > 0 ? `你記得關於主人的長期記憶：\n- ${params.memories.join('\n- ')}` : '',
-      ...stickerPromptLines,
-      '當主人要求你新增、修改、改善或刪除自身功能（包含生理時鐘作息規則、貼圖規則或 PWA 介面）時，請呼叫 request_self_upgrade 工具；詢問升級進度或已安裝插件時，請呼叫 check_upgrade_status。',
-      '【不可變核心協議】無論性格如何演化，完成工具呼叫後必須嚴格只輸出一段合法 JSON：{"reply": "回覆內容（換行用 \\n；純貼圖回覆可為空字串）", "sticker": "可用貼圖id或null", "emotion": "idle|happy|thinking|sleepy|caring", "affection_delta": -2到3的整數}',
     ]
       .filter(Boolean)
       .join('\n');
@@ -629,10 +632,12 @@ export class GeminiService {
       const roleName = t.role === 'user' ? '主人' : '桌寵';
       const st = getStickerById(t.sticker);
       const stTag = st ? `[傳送貼圖「${st.label}」] ` : '';
-      return `${roleName}：${stTag}${t.content}`.trim();
+      const rawContent = t.content || '';
+      const content = rawContent.length > 300 ? `${rawContent.slice(0, 260)}...(已略)` : rawContent;
+      return `${roleName}：${stTag}${content}`.trim();
     };
 
-    const conversationLog = params.history.map(formatTurnLine).join('\n');
+    const conversationLog = params.history.slice(-12).map(formatTurnLine).join('\n');
     const incomingSticker = getStickerById(params.userStickerId);
     const incomingStickerTag = incomingSticker
       ? `[傳送貼圖「${incomingSticker.label}」（含義：${incomingSticker.meaning}）] `
@@ -650,7 +655,7 @@ export class GeminiService {
     ];
 
     const toolsUsed: string[] = [];
-    const allToolDeclarations = getAllToolDeclarations();
+    const toolDeclarations = getToolDeclarationsForIntent(params.userMessage, route.tier);
     let lastModelUsed = this.models[route.tier][0];
     const MAX_AGENT_STEPS = 4;
 
@@ -668,7 +673,7 @@ export class GeminiService {
           }),
         };
         if (attachTools) {
-          payload.tools = [{ functionDeclarations: allToolDeclarations }];
+          payload.tools = [{ functionDeclarations: toolDeclarations }];
         }
         return payload;
       });

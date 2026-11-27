@@ -29,6 +29,10 @@ const HEARTBEAT_INTERVAL_MS = 20 * 1000; // 每 20 秒回寫一次心跳給 PWA
 const MAX_AGENT_TURNS = 20; // 最多執行 20 輪自主讀寫與修復步驟
 const MAX_TIMEOUT_RETRIES = 1; // 同一模型逾時後先原地重試 1 次
 const TIMEOUT_RETRY_DELAY_MS = 5 * 1000;
+const DEFAULT_MAX_READ_LINES = 150;
+const MAX_SEARCH_MATCHES = 30;
+const KEEP_RECENT_TOOL_TURNS = 3;
+const PRUNABLE_TOOLS = new Set(['read_file', 'search_in_file', 'run_checks']);
 
 const userId = (process.env.INPUT_USER_ID || 'zero_main').trim();
 const instruction = (process.env.INPUT_INSTRUCTION || '').trim();
@@ -379,7 +383,8 @@ const AGENT_TOOL_DECLARATIONS = [
   },
   {
     name: 'read_file',
-    description: '讀取檔案內容（會附帶行號）。可選填 start_line 與 end_line 局部閱讀大型檔案。',
+    description:
+      '讀取檔案內容（會附帶行號）。若未指定 start_line / end_line 且超過 150 行，預設僅回傳前 150 行；大型檔案請先用 search_in_file 定位再指定行號分段讀取。',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -388,6 +393,21 @@ const AGENT_TOOL_DECLARATIONS = [
         end_line: { type: 'INTEGER', description: '結束行號（含，選填）' },
       },
       required: ['path'],
+    },
+  },
+  {
+    name: 'search_in_file',
+    description:
+      '在白名單可讀檔案中搜尋關鍵字或正規表達式，回傳命中行號與前後 2 行上下文（單次最多 30 筆）。面對大型檔案應先用此工具定位再局部 read_file。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: '專案相對路徑，例如 src/ui/script.ts' },
+        query: { type: 'STRING', description: '搜尋關鍵字或正規表達式字串' },
+        is_regex: { type: 'BOOLEAN', description: '是否將 query 視為正規表達式（預設 false）' },
+        case_sensitive: { type: 'BOOLEAN', description: '是否區分大小寫（預設 false）' },
+      },
+      required: ['path', 'query'],
     },
   },
   {
@@ -484,21 +504,105 @@ async function executeTool(name, args, session) {
       const raw = fs.readFileSync(absPath, 'utf8');
       const lines = raw.split('\n');
       const totalLines = lines.length;
+      const hasStart = args.start_line !== undefined && args.start_line !== null && args.start_line !== '';
+      const hasEnd = args.end_line !== undefined && args.end_line !== null && args.end_line !== '';
       const start = Math.max(1, Number(args.start_line) || 1);
-      const end = Math.min(totalLines, Number(args.end_line) || totalLines);
+      let end = Math.min(totalLines, Number(args.end_line) || totalLines);
+      let truncated = false;
+      if (!hasStart && !hasEnd && totalLines > DEFAULT_MAX_READ_LINES) {
+        end = DEFAULT_MAX_READ_LINES;
+        truncated = true;
+      }
       const sliced = lines
         .slice(start - 1, end)
         .map((text, idx) => `${start + idx}: ${text}`)
         .join('\n');
 
-      await logStep('tool_read', `讀取 ${relPath}（第 ${start}-${end} 行 / 共 ${totalLines} 行）`);
+      await logStep(
+        'tool_read',
+        `讀取 ${relPath}（第 ${start}-${end} 行 / 共 ${totalLines} 行${truncated ? '，已截斷' : ''}）`
+      );
       return {
         ok: true,
         path: relPath,
         editable: isEditablePath(relPath),
         total_lines: totalLines,
         range: `${start}-${end}`,
+        ...(truncated
+          ? {
+              truncated: true,
+              hint: `檔案共 ${totalLines} 行，未指定行號範圍預設僅回傳前 ${DEFAULT_MAX_READ_LINES} 行。請改用 search_in_file 定位行號，或指定 start_line / end_line 分段讀取。`,
+            }
+          : {}),
         content: sliced,
+      };
+    }
+
+    if (name === 'search_in_file') {
+      const relPath = normalizeRelPath(args.path);
+      if (!isReadablePath(relPath)) {
+        return { ok: false, error: `拒絕搜尋未授權路徑：${relPath}` };
+      }
+      const absPath = path.resolve(relPath);
+      if (!fs.existsSync(absPath)) {
+        return { ok: false, error: `檔案不存在：${relPath}` };
+      }
+      const query = typeof args.query === 'string' ? args.query : '';
+      if (!query) {
+        return { ok: false, error: '請提供非空的搜尋關鍵字或正規表達式 query' };
+      }
+      const isRegex = Boolean(args.is_regex);
+      const caseSensitive = Boolean(args.case_sensitive);
+      let regex = null;
+      if (isRegex) {
+        try {
+          regex = new RegExp(query, caseSensitive ? '' : 'i');
+        } catch (err) {
+          return {
+            ok: false,
+            error: `無效的正規表達式：${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
+
+      const raw = fs.readFileSync(absPath, 'utf8');
+      const lines = raw.split('\n');
+      const needle = caseSensitive ? query : query.toLowerCase();
+      const matches = [];
+      let totalMatches = 0;
+
+      for (let i = 0; i < lines.length; i += 1) {
+        const lineText = lines[i];
+        const hit = regex
+          ? regex.test(lineText)
+          : (caseSensitive ? lineText : lineText.toLowerCase()).includes(needle);
+        if (!hit) continue;
+        totalMatches += 1;
+        if (matches.length < MAX_SEARCH_MATCHES) {
+          const ctxStart = Math.max(0, i - 2);
+          const ctxEnd = Math.min(lines.length - 1, i + 2);
+          const context = [];
+          for (let j = ctxStart; j <= ctxEnd; j += 1) {
+            context.push(`${j + 1}: ${lines[j]}`);
+          }
+          matches.push({
+            line: i + 1,
+            context: context.join('\n'),
+          });
+        }
+      }
+
+      await logStep(
+        'tool_search',
+        `搜尋 ${relPath}（「${query.slice(0, 30)}」，命中 ${totalMatches} 筆）`
+      );
+      return {
+        ok: true,
+        path: relPath,
+        total_lines: lines.length,
+        total_matches: totalMatches,
+        truncated: totalMatches > MAX_SEARCH_MATCHES,
+        matches,
       };
     }
 
@@ -829,6 +933,53 @@ function sanitizeContentsForFallback(contents) {
   });
 }
 
+// 非破壞性壓縮送出給模型的歷史上下文：保留最近 N 輪完整 functionResponse，摺疊更早輪次的長輸出
+function pruneContentsForRequest(contents, keepRecentToolTurns = KEEP_RECENT_TOOL_TURNS) {
+  const toolTurnIndices = [];
+  for (let i = 0; i < contents.length; i += 1) {
+    const turn = contents[i];
+    if (
+      turn.role === 'user' &&
+      Array.isArray(turn.parts) &&
+      turn.parts.some((p) => p.functionResponse)
+    ) {
+      toolTurnIndices.push(i);
+    }
+  }
+  if (toolTurnIndices.length <= keepRecentToolTurns) {
+    return contents;
+  }
+
+  const pruneIndexSet = new Set(
+    toolTurnIndices.slice(0, toolTurnIndices.length - keepRecentToolTurns)
+  );
+  return contents.map((turn, idx) => {
+    if (!pruneIndexSet.has(idx)) return turn;
+    return {
+      ...turn,
+      parts: turn.parts.map((part) => {
+        const fr = part.functionResponse;
+        if (!fr || !PRUNABLE_TOOLS.has(fr.name)) return part;
+        const resp = fr.response && typeof fr.response === 'object' ? fr.response : {};
+        return {
+          ...part,
+          functionResponse: {
+            ...fr,
+            response: {
+              ok: resp.ok ?? true,
+              ...(resp.path ? { path: resp.path } : {}),
+              ...(resp.range ? { range: resp.range } : {}),
+              ...(typeof resp.passed === 'boolean' ? { passed: resp.passed } : {}),
+              pruned: true,
+              summary: `[已摺疊舊輪次 ${fr.name} 輸出以節省 Token，如需內容請重新呼叫 ${fr.name}]`,
+            },
+          },
+        };
+      }),
+    };
+  });
+}
+
 async function callAgentStep(modelsOrder, lastModelUsed, systemPrompt, contents, turnNum) {
   const errors = [];
 
@@ -938,10 +1089,11 @@ function buildSystemPrompt() {
     '10. src/plugins/stickers.ts 為貼圖註冊表，嚴禁刪除且必須保留 STICKER_PACK 與相關匯出函式；不可修改或刪除 public/stickers/ 內圖片，但可依主人需求微調 bot_hint、meaning、category 或 enabled。',
     '',
     '【高效多步工作流】',
-    '1. 先呼叫 read_file 閱讀與需求直接相關的檔案（若要新增插件先看 src/types.ts 與 src/plugins/registry.ts；若改 UI 先看 src/ui.ts 或 src/ui/*）。',
-    '2. 小範圍修改優先使用 patch_file；新增檔案或大重構（例如 UI 拆檔）使用 write_file。',
-    '3. 完成所有檔案變更後，必須呼叫 run_checks 驗證安全性、UI 沙盒與 TypeScript 編譯；若報錯請立即針對錯誤行數修復並重跑 run_checks。',
-    '4. 確認 run_checks 全數通過後，呼叫 finish_upgrade 結束任務並提供簡短繁體中文 summary。',
+    '1. 先檢視與需求直接相關的檔案（若要新增插件先看 src/types.ts 與 src/plugins/registry.ts；若改 UI 先看 src/ui.ts 或 src/ui/*）。',
+    '2. 面對大型檔案（如 src/ui/script.ts、src/plugins/proactive-messages.ts 等超過 150 行的檔案），必須先使用 search_in_file 搜尋關鍵字定位行號，再用 read_file 指定 start_line / end_line 局部讀取目標區段，接著以 patch_file 精準修改，避免整檔讀取浪費 Token。',
+    '3. 小範圍修改優先使用 patch_file；新增檔案或大重構（例如 UI 拆檔）使用 write_file。',
+    '4. 完成所有檔案變更後，必須呼叫 run_checks 驗證安全性、UI 沙盒與 TypeScript 編譯；若報錯請立即針對錯誤行數修復並重跑 run_checks。',
+    '5. 確認 run_checks 全數通過後，呼叫 finish_upgrade 結束任務並提供簡短繁體中文 summary。',
   ].join('\n');
 }
 
@@ -1007,11 +1159,12 @@ async function main() {
       ? Array.from(new Set([activeModel, ...candidateModels]))
       : candidateModels;
 
+    const requestContents = pruneContentsForRequest(contents, KEEP_RECENT_TOOL_TURNS);
     const { parts, modelUsed } = await callAgentStep(
       modelsOrder,
       activeModel,
       systemPrompt,
-      contents,
+      requestContents,
       turn
     );
 
