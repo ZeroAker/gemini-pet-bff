@@ -43,8 +43,6 @@ export const moduleCore: UiCoreSkeletonModule = {
     var quickRefreshBtnEl = document.getElementById('quickRefreshBtn');
     var petStageEl = document.getElementById('petStage');
     var petAvatarImgEl = document.getElementById('petAvatarImg');
-    var toggleChatPanelBtnEl = document.getElementById('toggleChatPanelBtn');
-    var petStageHintEl = document.getElementById('petStageHint');
     var modalEl = document.getElementById('settingsModal');
     var tokenInput = document.getElementById('tokenInput');
     var uidInput = document.getElementById('uidInput');
@@ -149,6 +147,56 @@ export const moduleCore: UiCoreSkeletonModule = {
       localStorage.setItem(CARE_STORAGE_KEY, JSON.stringify(st));
     }
 
+    function isDesktopMode() {
+      var search = (typeof location !== 'undefined' && location.search) ? location.search : '';
+      return /[?&]mode=desktop\b/i.test(search);
+    }
+
+    var desktopModeActive = isDesktopMode();
+
+    function initDesktopBubbleLayout() {
+      if (!desktopModeActive) {
+        if (petStageEl) {
+          petStageEl.style.display = 'none';
+        }
+        return;
+      }
+
+      document.documentElement.classList.add('mode-desktop', 'panel-collapsed-root');
+      document.body.classList.add('mode-desktop', 'panel-collapsed');
+
+      if (petStageEl) {
+        petStageEl.style.display = 'flex';
+      }
+      if (petAvatarImgEl && !petAvatarImgEl.getAttribute('src')) {
+        petAvatarImgEl.setAttribute('data-emotion', 'idle');
+        petAvatarImgEl.src = '/avatar/idle.webp';
+      }
+
+      var bubbleWrap = document.getElementById('desktopChatBubble');
+      if (!bubbleWrap) {
+        bubbleWrap = document.createElement('div');
+        bubbleWrap.id = 'desktopChatBubble';
+        bubbleWrap.className = 'desktop-chat-bubble no-drag';
+
+        var children = Array.prototype.slice.call(document.body.children);
+        for (var i = 0; i < children.length; i++) {
+          var child = children[i];
+          if (child.id === 'petStage' || child.id === 'ui-script' || child.tagName === 'SCRIPT') {
+            continue;
+          }
+          bubbleWrap.appendChild(child);
+        }
+        document.body.insertBefore(bubbleWrap, petStageEl || null);
+      }
+
+      if (window.electronPet && typeof window.electronPet.setExpanded === 'function') {
+        window.electronPet.setExpanded(false);
+      }
+    }
+
+    initDesktopBubbleLayout();
+
     function setPetMood(mood) {
       var m = normalizeMood(mood);
       if (petEmojiEl) {
@@ -158,6 +206,8 @@ export const moduleCore: UiCoreSkeletonModule = {
         });
         petEmojiEl.classList.add('mood-' + m);
       }
+      if (!desktopModeActive) return;
+
       if (petStageEl) {
         VALID_MOODS.forEach(function (k) {
           petStageEl.classList.remove('mood-' + k);
@@ -179,6 +229,7 @@ export const moduleCore: UiCoreSkeletonModule = {
 
     if (petAvatarImgEl) {
       petAvatarImgEl.onerror = function () {
+        if (!desktopModeActive) return;
         var curSrc = petAvatarImgEl.getAttribute('src') || '';
         if (curSrc !== '/avatar/idle.webp') {
           petAvatarImgEl.src = '/avatar/idle.webp';
@@ -186,19 +237,9 @@ export const moduleCore: UiCoreSkeletonModule = {
       };
     }
 
-    function isDesktopTransparentEnv() {
-      var ua = navigator.userAgent || '';
-      var search = (typeof location !== 'undefined' && location.search) ? location.search : '';
-      return /Electron/i.test(ua) || /[?&](desktop|transparent)=1/i.test(search);
-    }
-
-    if (isDesktopTransparentEnv()) {
-      document.documentElement.classList.add('desktop-transparent');
-      document.body.classList.add('desktop-transparent');
-    }
-
     var lastPanelToggleAt = 0;
     function setChatPanelCollapsed(collapsed) {
+      if (!desktopModeActive) return;
       if (collapsed) {
         document.documentElement.classList.add('panel-collapsed-root');
         document.body.classList.add('panel-collapsed');
@@ -206,17 +247,20 @@ export const moduleCore: UiCoreSkeletonModule = {
         document.documentElement.classList.remove('panel-collapsed-root');
         document.body.classList.remove('panel-collapsed');
       }
-      if (toggleChatPanelBtnEl) {
-        toggleChatPanelBtnEl.textContent = collapsed ? '💬 展開對話' : '💬 收合對話';
+      if (window.electronPet && typeof window.electronPet.setExpanded === 'function') {
+        window.electronPet.setExpanded(!collapsed);
       }
-      try {
-        localStorage.setItem('pet_panel_collapsed', collapsed ? '1' : '0');
-      } catch (e) {}
+      if (!collapsed && chatEl) {
+        setTimeout(function () {
+          chatEl.scrollTop = chatEl.scrollHeight;
+        }, 50);
+      }
     }
 
     function togglePetChatPanel() {
+      if (!desktopModeActive) return;
       var now = Date.now();
-      if (now - lastPanelToggleAt < 220) return;
+      if (now - lastPanelToggleAt < 180) return;
       lastPanelToggleAt = now;
       var willCollapse = !document.body.classList.contains('panel-collapsed');
       setChatPanelCollapsed(willCollapse);
@@ -224,29 +268,54 @@ export const moduleCore: UiCoreSkeletonModule = {
 
     window.togglePetChatPanel = togglePetChatPanel;
 
-    if (toggleChatPanelBtnEl) {
-      toggleChatPanelBtnEl.onclick = function (e) {
-        e.stopPropagation();
-        togglePetChatPanel();
+    if (petStageEl && desktopModeActive) {
+      var dragState = {
+        active: false,
+        moved: false,
+        startScreenX: 0,
+        startScreenY: 0,
+        lastScreenX: 0,
+        lastScreenY: 0
       };
-    }
-    if (petStageHintEl) {
-      petStageHintEl.ondblclick = function (e) {
-        e.stopPropagation();
-        togglePetChatPanel();
-      };
-    }
-    if (petStageEl) {
-      petStageEl.addEventListener('dblclick', function () {
-        togglePetChatPanel();
+
+      petStageEl.addEventListener('mousedown', function (e) {
+        if (e.button !== 0) return;
+        dragState.active = true;
+        dragState.moved = false;
+        dragState.startScreenX = e.screenX;
+        dragState.startScreenY = e.screenY;
+        dragState.lastScreenX = e.screenX;
+        dragState.lastScreenY = e.screenY;
+      });
+
+      window.addEventListener('mousemove', function (e) {
+        if (!dragState.active) return;
+        var totalDx = e.screenX - dragState.startScreenX;
+        var totalDy = e.screenY - dragState.startScreenY;
+        if (!dragState.moved && (Math.abs(totalDx) > 4 || Math.abs(totalDy) > 4)) {
+          dragState.moved = true;
+        }
+        if (dragState.moved) {
+          var stepDx = e.screenX - dragState.lastScreenX;
+          var stepDy = e.screenY - dragState.lastScreenY;
+          dragState.lastScreenX = e.screenX;
+          dragState.lastScreenY = e.screenY;
+          if (window.electronPet && typeof window.electronPet.moveWindowBy === 'function') {
+            window.electronPet.moveWindowBy(stepDx, stepDy);
+          }
+        }
+      });
+
+      window.addEventListener('mouseup', function (e) {
+        if (!dragState.active) return;
+        var wasMoved = dragState.moved;
+        dragState.active = false;
+        dragState.moved = false;
+        if (!wasMoved && e.button === 0) {
+          togglePetChatPanel();
+        }
       });
     }
-
-    try {
-      if (localStorage.getItem('pet_panel_collapsed') === '1') {
-        setChatPanelCollapsed(true);
-      }
-    } catch (e) {}
 
     function triggerAvatarBounce() {
       if (petEmojiEl) {
@@ -255,7 +324,7 @@ export const moduleCore: UiCoreSkeletonModule = {
           petEmojiEl.classList.remove('bounce');
         }, 520);
       }
-      if (petAvatarImgEl) {
+      if (desktopModeActive && petAvatarImgEl) {
         petAvatarImgEl.classList.add('bounce');
         setTimeout(function () {
           petAvatarImgEl.classList.remove('bounce');

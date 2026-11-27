@@ -437,92 +437,67 @@
       }
     }
     #petStage {
-      width: 100%;
-      min-height: 210px;
-      max-height: 250px;
-      background: radial-gradient(circle at center, rgba(27, 32, 56, 0.78) 0%, rgba(15, 17, 26, 0.35) 100%);
-      border-bottom: 1px solid rgba(38, 43, 61, 0.75);
-      position: relative;
-      flex-shrink: 0;
+      display: none;
+    }
+    body.mode-desktop #petStage {
+      position: fixed;
+      right: 10px;
+      bottom: 10px;
+      width: 180px;
+      height: 200px;
+      background: transparent;
+      border: none;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      overflow: hidden;
+      overflow: visible;
       user-select: none;
       -webkit-user-select: none;
-      -webkit-app-region: drag;
-      cursor: grab;
-      transition: min-height 0.3s ease, max-height 0.3s ease, background 0.3s ease, border-color 0.3s ease;
-    }
-    .pet-stage-toolbar {
-      position: absolute;
-      top: 8px;
-      right: 10px;
-      z-index: 5;
-      display: flex;
-      gap: 6px;
-      opacity: 0.78;
-      transition: opacity 0.2s ease;
-    }
-    #petStage:hover .pet-stage-toolbar {
-      opacity: 1;
-    }
-    .pet-stage-toggle-btn {
-      background: rgba(23, 26, 38, 0.78);
-      color: #dfe4f2;
-      border: 1px solid rgba(124, 111, 247, 0.45);
-      border-radius: 99px;
-      padding: 4px 10px;
-      font-size: 11px;
       cursor: pointer;
-      backdrop-filter: blur(6px);
-      transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
-    }
-    .pet-stage-toggle-btn:hover {
-      background: rgba(108, 92, 231, 0.38);
-      border-color: #a29bfe;
-      color: #fff;
-      transform: translateY(-1px);
+      z-index: 120;
     }
     .pet-stage-avatar-wrap {
       position: relative;
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 170px;
-      height: 170px;
+      width: 180px;
+      height: 200px;
       pointer-events: auto;
     }
     .pet-avatar-img {
-      max-width: 164px;
-      max-height: 164px;
+      max-width: 172px;
+      max-height: 192px;
       width: auto;
       height: auto;
       object-fit: contain;
-      filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.45));
+      filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.5));
       transform-origin: center bottom;
       animation: petStageBreath 3.6s ease-in-out infinite;
       will-change: transform, filter;
       user-select: none;
       -webkit-user-drag: none;
-      transition: filter 0.35s ease;
+      transition: filter 0.35s ease, transform 0.2s ease;
+    }
+    .pet-avatar-img:hover {
+      filter: drop-shadow(0 10px 22px rgba(162, 155, 254, 0.65));
     }
     .pet-avatar-img.mood-happy {
       animation: petStageBreath 2.2s ease-in-out infinite;
-      filter: drop-shadow(0 8px 20px rgba(253, 121, 168, 0.48));
+      filter: drop-shadow(0 8px 20px rgba(253, 121, 168, 0.52));
     }
     .pet-avatar-img.mood-thinking {
       animation: petStageBreath 3.2s ease-in-out infinite;
-      filter: drop-shadow(0 8px 20px rgba(116, 185, 255, 0.45));
+      filter: drop-shadow(0 8px 20px rgba(116, 185, 255, 0.48));
     }
     .pet-avatar-img.mood-sleepy {
       animation: petStageSleepyBreath 4.6s ease-in-out infinite;
-      filter: drop-shadow(0 6px 16px rgba(129, 236, 236, 0.3));
+      filter: drop-shadow(0 6px 16px rgba(129, 236, 236, 0.32));
     }
     .pet-avatar-img.mood-caring {
       animation: petStageBreath 2.6s ease-in-out infinite;
-      filter: drop-shadow(0 8px 22px rgba(255, 118, 117, 0.55));
+      filter: drop-shadow(0 8px 22px rgba(255, 118, 117, 0.58));
     }
     .pet-avatar-img.bounce {
       animation: avatarQuickReact 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
@@ -534,22 +509,6 @@
     @keyframes petStageSleepyBreath {
       0%, 100% { transform: translateY(1px) scale(0.98); opacity: 0.94; }
       50% { transform: translateY(-2px) scale(1.015); opacity: 1; }
-    }
-    .pet-stage-hint {
-      position: absolute;
-      bottom: 6px;
-      font-size: 10.5px;
-      color: rgba(207, 213, 230, 0.72);
-      background: rgba(15, 17, 26, 0.52);
-      border: 1px solid rgba(124, 111, 247, 0.25);
-      border-radius: 99px;
-      padding: 2px 9px;
-      opacity: 0;
-      transition: opacity 0.2s ease;
-      cursor: pointer;
-    }
-    #petStage:hover .pet-stage-hint {
-      opacity: 1;
     }
     .no-drag,
     button,
@@ -574,47 +533,59 @@
     #titleProgressSlot {
       -webkit-app-region: no-drag;
     }
-    html.desktop-transparent,
-    body.desktop-transparent,
-    body.desktop-transparent.theme-day,
-    body.desktop-transparent.theme-dusk,
-    body.desktop-transparent.theme-night,
-    html.panel-collapsed-root,
-    body.panel-collapsed,
-    body.panel-collapsed.theme-day,
-    body.panel-collapsed.theme-dusk,
-    body.panel-collapsed.theme-night {
+    html.mode-desktop,
+    body.mode-desktop,
+    body.mode-desktop.theme-day,
+    body.mode-desktop.theme-dusk,
+    body.mode-desktop.theme-night {
       background: transparent !important;
+      overflow: hidden;
     }
-    body.desktop-transparent #petStage,
-    body.panel-collapsed #petStage {
-      background: transparent !important;
-      border-bottom-color: transparent !important;
+    .desktop-chat-bubble {
+      position: fixed;
+      right: 155px;
+      bottom: 145px;
+      width: 390px;
+      height: 560px;
+      max-width: calc(100vw - 170px);
+      max-height: calc(100dvh - 160px);
+      background: linear-gradient(180deg, rgba(19, 23, 38, 0.97) 0%, rgba(14, 17, 29, 0.98) 100%);
+      border: 1.5px solid rgba(124, 111, 247, 0.55);
+      border-radius: 18px;
+      border-bottom-right-radius: 6px;
+      box-shadow: 0 16px 38px rgba(0, 0, 0, 0.62), 0 0 18px rgba(108, 92, 231, 0.22);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      z-index: 100;
+      transform-origin: bottom right;
+      animation: desktopBubblePopIn 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+      -webkit-app-region: no-drag;
     }
-    body.panel-collapsed header,
-    body.panel-collapsed #titleProgressSlot,
-    body.panel-collapsed #upgradeBar,
-    body.panel-collapsed #proactiveBubble,
-    body.panel-collapsed #chat,
-    body.panel-collapsed #quickActionsBar,
-    body.panel-collapsed #stickerAttachBar,
-    body.panel-collapsed #stickerDrawer,
-    body.panel-collapsed footer {
+    .desktop-chat-bubble::after {
+      content: "";
+      position: absolute;
+      right: -10px;
+      bottom: 14px;
+      width: 18px;
+      height: 18px;
+      background: #0e111d;
+      border-right: 1.5px solid rgba(124, 111, 247, 0.55);
+      border-bottom: 1.5px solid rgba(124, 111, 247, 0.55);
+      transform: rotate(-45deg);
+      pointer-events: none;
+    }
+    @keyframes desktopBubblePopIn {
+      0% { opacity: 0; transform: scale(0.78) translate(16px, 16px); }
+      100% { opacity: 1; transform: scale(1) translate(0, 0); }
+    }
+    body.mode-desktop .desktop-chat-bubble .modal {
+      position: absolute;
+      inset: 0;
+      border-radius: 16px;
+    }
+    body.mode-desktop.panel-collapsed .desktop-chat-bubble {
       display: none !important;
-    }
-    body.panel-collapsed #petStage {
-      flex: 1 1 auto;
-      min-height: 100dvh;
-      max-height: 100dvh;
-      border-bottom: none;
-    }
-    body.panel-collapsed .pet-stage-avatar-wrap {
-      width: 220px;
-      height: 220px;
-    }
-    body.panel-collapsed .pet-avatar-img {
-      max-width: 210px;
-      max-height: 210px;
     }
     #chat {
       flex: 1;
