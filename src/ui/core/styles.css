@@ -351,6 +351,8 @@
       color: #fff;
     }
     .btn-text-short { display: none; }
+    .desktop-only-btn { display: none; }
+    body.mode-desktop .desktop-only-btn { display: inline-flex; }
     .btn-primary {
       background: #6c5ce7; color: #fff; border: none;
       border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
@@ -543,12 +545,12 @@
     }
     .desktop-chat-bubble {
       position: fixed;
-      right: 155px;
-      bottom: 145px;
+      right: 175px;
+      bottom: 155px;
       width: 390px;
       height: 560px;
-      max-width: calc(100vw - 170px);
-      max-height: calc(100dvh - 160px);
+      max-width: calc(100vw - 185px);
+      max-height: calc(100dvh - 165px);
       background: linear-gradient(180deg, rgba(19, 23, 38, 0.97) 0%, rgba(14, 17, 29, 0.98) 100%);
       border: 1.5px solid rgba(124, 111, 247, 0.55);
       border-radius: 18px;
@@ -557,23 +559,71 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      z-index: 100;
+      z-index: 130;
       transform-origin: bottom right;
       animation: desktopBubblePopIn 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
       -webkit-app-region: no-drag;
     }
-    .desktop-chat-bubble::after {
-      content: "";
-      position: absolute;
-      right: -10px;
-      bottom: 14px;
-      width: 18px;
-      height: 18px;
-      background: #0e111d;
-      border-right: 1.5px solid rgba(124, 111, 247, 0.55);
-      border-bottom: 1.5px solid rgba(124, 111, 247, 0.55);
-      transform: rotate(-45deg);
-      pointer-events: none;
+    body.mode-desktop .desktop-chat-bubble header {
+      padding: 8px 10px;
+      gap: 6px;
+    }
+    body.mode-desktop .desktop-chat-bubble .pet-info {
+      flex: 1 1 100%;
+      min-width: 0;
+    }
+    body.mode-desktop .desktop-chat-bubble .pet-meta {
+      min-width: 0;
+    }
+    body.mode-desktop .desktop-chat-bubble .avatar {
+      width: 34px;
+      height: 34px;
+      font-size: 18px;
+    }
+    body.mode-desktop .desktop-chat-bubble .title {
+      font-size: 14px;
+    }
+    body.mode-desktop .desktop-chat-bubble .pet-activity-badge {
+      font-size: 10.5px;
+      padding: 1px 7px;
+    }
+    body.mode-desktop .desktop-chat-bubble .stat-pill,
+    body.mode-desktop .desktop-chat-bubble .boredom-meter {
+      font-size: 10.5px;
+      padding: 1px 6px;
+      gap: 4px;
+    }
+    body.mode-desktop .desktop-chat-bubble .stat-pill-track,
+    body.mode-desktop .desktop-chat-bubble .boredom-track {
+      width: 36px;
+    }
+    body.mode-desktop .desktop-chat-bubble .status-note-text {
+      max-width: 220px;
+      font-size: 10.5px;
+    }
+    body.mode-desktop .desktop-chat-bubble .header-actions {
+      flex: 1 1 100%;
+      width: 100%;
+      justify-content: flex-start;
+      gap: 5px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    body.mode-desktop .desktop-chat-bubble .header-actions::-webkit-scrollbar {
+      display: none;
+    }
+    body.mode-desktop .desktop-chat-bubble .header-actions .btn-icon {
+      flex: 1 0 auto;
+      padding: 5px 8px;
+      font-size: 12px;
+      border-radius: 7px;
+    }
+    body.mode-desktop .desktop-chat-bubble .btn-text-full {
+      display: none;
+    }
+    body.mode-desktop .desktop-chat-bubble .btn-text-short {
+      display: inline;
     }
     @keyframes desktopBubblePopIn {
       0% { opacity: 0; transform: scale(0.78) translate(16px, 16px); }
@@ -583,6 +633,12 @@
       position: absolute;
       inset: 0;
       border-radius: 16px;
+      z-index: 150;
+    }
+    body.mode-desktop .desktop-chat-bubble .modal-card,
+    body.mode-desktop .desktop-chat-bubble .modal-card.wide {
+      max-width: 100%;
+      max-height: 92%;
     }
     body.mode-desktop.panel-collapsed .desktop-chat-bubble {
       display: none !important;

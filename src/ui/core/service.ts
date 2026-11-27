@@ -148,11 +148,29 @@ export const moduleCore: UiCoreSkeletonModule = {
     }
 
     function isDesktopMode() {
-      var search = (typeof location !== 'undefined' && location.search) ? location.search : '';
-      return /[?&]mode=desktop\b/i.test(search);
+      if (typeof window !== 'undefined' && window.electronPet && window.electronPet.isElectron) {
+        return true;
+      }
+      try {
+        var params = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
+        return (params.get('mode') || '').toLowerCase() === 'desktop';
+      } catch (e) {
+        var search = (typeof location !== 'undefined' && location.search) ? location.search.toLowerCase() : '';
+        return search.indexOf('mode=desktop') >= 0;
+      }
     }
 
     var desktopModeActive = isDesktopMode();
+
+    if (petAvatarImgEl) {
+      petAvatarImgEl.onerror = function () {
+        if (!desktopModeActive) return;
+        var curSrc = petAvatarImgEl.getAttribute('src') || '';
+        if (curSrc !== '/avatar/idle.webp') {
+          petAvatarImgEl.src = '/avatar/idle.webp';
+        }
+      };
+    }
 
     function initDesktopBubbleLayout() {
       if (!desktopModeActive) {
@@ -190,6 +208,14 @@ export const moduleCore: UiCoreSkeletonModule = {
         document.body.insertBefore(bubbleWrap, petStageEl || null);
       }
 
+      var collapseBtnEl = document.getElementById('collapseBubbleBtn');
+      if (collapseBtnEl) {
+        collapseBtnEl.onclick = function (e) {
+          e.stopPropagation();
+          setChatPanelCollapsed(true);
+        };
+      }
+
       if (window.electronPet && typeof window.electronPet.setExpanded === 'function') {
         window.electronPet.setExpanded(false);
       }
@@ -225,16 +251,6 @@ export const moduleCore: UiCoreSkeletonModule = {
           petAvatarImgEl.src = nextAvatarSrc;
         }
       }
-    }
-
-    if (petAvatarImgEl) {
-      petAvatarImgEl.onerror = function () {
-        if (!desktopModeActive) return;
-        var curSrc = petAvatarImgEl.getAttribute('src') || '';
-        if (curSrc !== '/avatar/idle.webp') {
-          petAvatarImgEl.src = '/avatar/idle.webp';
-        }
-      };
     }
 
     var lastPanelToggleAt = 0;

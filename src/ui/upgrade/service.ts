@@ -167,8 +167,8 @@ export const moduleUpgrade: UiFeatureModule = {
       var validGh = getValidGhForState(st, ghInfo);
 
       var rejectLogRe = /(rejected|reject_upgrade|安全閘門|拒絕修改|拒絕升級|受保護|核心模組|核心功能|白名單|不在可編輯|PROTECTED_CORE)/i;
-      var codeErrLogRe = /(errors+TSd+|型別檢查.*失敗|型別錯誤|語法錯誤|語法驗證.*失敗|SyntaxError|TypeError|沙盒驗證.*失敗|安全掃描.*失敗|編譯失敗)/i;
-      var mergedLogRe = /(升級已自動合併至s*main|已自動合併至s*main)/i;
+      var codeErrLogRe = /(error\\s+TS\\d+|型別檢查.*失敗|型別錯誤|語法錯誤|語法驗證.*失敗|SyntaxError|TypeError|沙盒驗證.*失敗|安全掃描.*失敗|編譯失敗)/i;
+      var mergedLogRe = /(升級已自動合併至\\s*main|已自動合併至\\s*main)/i;
 
       var hasKvRejectSignal = s === 'rejected' || stepLower === 'rejected' || rejectLogRe.test(String(st.error || '')) || rejectLogRe.test(joinedLogs);
       var hasKvCodeErrSignal = codeErrLogRe.test(String(st.error || '')) || codeErrLogRe.test(joinedLogs);
