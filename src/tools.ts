@@ -52,6 +52,34 @@ const CORE_TOOL_DECLARATIONS: ToolDeclaration[] = [
     description: '查詢最近升級進度/PR 與已安裝自訂插件。',
     parameters: { type: 'OBJECT', properties: {} },
   },
+  {
+    name: 'skill_view',
+    description: '讀取指定程序性技能（Skill/SOP）完整內容；找不到時回傳可用技能清單。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        name: { type: 'STRING', description: '技能名稱（^[a-z0-9-]{2,40}$）' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'skill_manage',
+    description: '管理可複用程序性技能與 SOP（list/create/patch/delete）。',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        action: { type: 'STRING', description: 'list | create | patch | delete' },
+        name: { type: 'STRING', description: '技能名稱 ^[a-z0-9-]{2,40}$（create/patch/delete 必填）' },
+        description: { type: 'STRING', description: '80字內簡介（create 必填）' },
+        content: { type: 'STRING', description: 'Markdown SOP 內容，上限2000字（create 必填）' },
+        search: { type: 'STRING', description: '欲替換的唯一原文片段（patch 必填）' },
+        replace: { type: 'STRING', description: '替換後的新片段（patch 必填）' },
+        tags: { type: 'STRING', description: '逗號分隔標籤，最多5個（選填）' },
+      },
+      required: ['action'],
+    },
+  },
 ];
 
 // 過濾掉任何試圖冒充核心名稱的插件，確保核心不可被覆寫
@@ -66,10 +94,12 @@ const UPGRADE_TOOL_NAMES = new Set([
 ]);
 const PET_CARE_TOOL_NAMES = new Set(['manage_pet_care_game']);
 const PROACTIVE_TOOL_NAMES = new Set(['manage_proactive_messages']);
+const SKILL_TOOL_NAMES = new Set(['skill_view', 'skill_manage']);
 const SCOPED_TOOL_NAMES = new Set([
   ...UPGRADE_TOOL_NAMES,
   ...PET_CARE_TOOL_NAMES,
   ...PROACTIVE_TOOL_NAMES,
+  ...SKILL_TOOL_NAMES,
 ]);
 
 const UPGRADE_INTENT_PATTERN =
@@ -78,6 +108,8 @@ const PET_CARE_INTENT_PATTERN =
   /餵|吃|食|點心|零食|小魚乾|蛋糕|咖啡|肚子|餓|活力|能量|猜拳|石頭|剪刀|布|接愛心|愛心|小遊戲|玩遊戲|\bgame\b|\bfeed\b|\bsnack\b|\brps\b/i;
 const PROACTIVE_INTENT_PATTERN =
   /提醒|排程|定時|鬧鐘|主動訊息|主動通知|閒置|追蹤升級|追蹤進度|回報升級|proactive|schedule|remind/i;
+const SKILL_INTENT_PATTERN =
+  /技能|\bskill\b|記住流程|\bsop\b|步驟|下次這樣做|照這個流程|工作流|標準流程|避坑/i;
 const CORE_ONLY_INTENT_PATTERN =
   /幾點|時間|日期|星期|\btime\b|待辦|todo|清單|記下|備忘|https?:\/\/|網頁|連結|網址|文章|摘要/i;
 
@@ -87,7 +119,8 @@ export function getAllToolDeclarations(): ToolDeclaration[] {
 
 export function getToolDeclarationsForIntent(
   userMessage: string,
-  tier?: ComplexityTier
+  tier?: ComplexityTier,
+  hasSavedSkills = false
 ): ToolDeclaration[] {
   const allDeclarations = getAllToolDeclarations();
   if (tier === 'complex') {
@@ -98,10 +131,12 @@ export function getToolDeclarationsForIntent(
   const wantsUpgrade = UPGRADE_INTENT_PATTERN.test(trimmed);
   const wantsPetCare = PET_CARE_INTENT_PATTERN.test(trimmed);
   const wantsProactive = PROACTIVE_INTENT_PATTERN.test(trimmed);
+  const wantsSkillsIntent = SKILL_INTENT_PATTERN.test(trimmed);
+  const wantsSkills = hasSavedSkills || wantsSkillsIntent;
   const wantsCoreOnly = CORE_ONLY_INTENT_PATTERN.test(trimmed);
 
   // 無法明確分類時，安全回退掛載全部工具，避免漏判
-  if (!wantsUpgrade && !wantsPetCare && !wantsProactive && !wantsCoreOnly) {
+  if (!wantsUpgrade && !wantsPetCare && !wantsProactive && !wantsSkillsIntent && !wantsCoreOnly) {
     return allDeclarations;
   }
 
@@ -110,6 +145,7 @@ export function getToolDeclarationsForIntent(
     if (UPGRADE_TOOL_NAMES.has(decl.name)) return wantsUpgrade;
     if (PET_CARE_TOOL_NAMES.has(decl.name)) return wantsPetCare;
     if (PROACTIVE_TOOL_NAMES.has(decl.name)) return wantsProactive;
+    if (SKILL_TOOL_NAMES.has(decl.name)) return wantsSkills;
     // 其他未分類的未來自訂插件預設保留，避免影響後續自我升級擴充
     return !SCOPED_TOOL_NAMES.has(decl.name);
   });
@@ -203,6 +239,73 @@ export async function executeAgentTool(
           description: p.declaration.description,
         })),
       };
+    }
+
+    if (name === 'skill_view') {
+      const skillName = String(args.name || '').trim().toLowerCase();
+      if (!skillName) {
+        const all = await ctx.stateSvc.getSkills(ctx.userId);
+        return { error: '請提供技能名稱 name', available_skills: Object.keys(all) };
+      }
+      const found = await ctx.stateSvc.getSkill(ctx.userId, skillName);
+      if (!found) {
+        const all = await ctx.stateSvc.getSkills(ctx.userId);
+        return {
+          ok: false,
+          error: `找不到技能「${skillName}」`,
+          available_skills: Object.keys(all),
+        };
+      }
+      return { ok: true, skill: found };
+    }
+
+    if (name === 'skill_manage') {
+      const action = String(args.action || 'list').trim().toLowerCase();
+      if (action === 'list') {
+        const all = await ctx.stateSvc.getSkills(ctx.userId);
+        const list = Object.values(all).map((s) => ({
+          name: s.name,
+          description: s.description,
+          tags: s.tags ?? [],
+          updated_at: s.updated_at,
+        }));
+        return { ok: true, count: list.length, skills: list };
+      }
+
+      if (action === 'create') {
+        const skillName = String(args.name || '').trim().toLowerCase();
+        const description = String(args.description || '').trim();
+        const content = String(args.content || '').trim();
+        const rawTags = args.tags;
+        const tags = Array.isArray(rawTags)
+          ? rawTags.map((t) => String(t).trim()).filter(Boolean)
+          : typeof rawTags === 'string'
+            ? rawTags
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean)
+            : undefined;
+        return await ctx.stateSvc.upsertSkill(ctx.userId, {
+          name: skillName,
+          description,
+          content,
+          tags,
+        });
+      }
+
+      if (action === 'patch') {
+        const skillName = String(args.name || '').trim().toLowerCase();
+        const search = typeof args.search === 'string' ? args.search : '';
+        const replace = typeof args.replace === 'string' ? args.replace : '';
+        return await ctx.stateSvc.patchSkill(ctx.userId, skillName, search, replace);
+      }
+
+      if (action === 'delete') {
+        const skillName = String(args.name || '').trim().toLowerCase();
+        return await ctx.stateSvc.deleteSkill(ctx.userId, skillName);
+      }
+
+      return { ok: false, error: `不支援的 skill_manage action: ${action}` };
     }
 
     // 執行自訂插件（獨立沙盒攔截，避免單一插件異常拖垮核心）

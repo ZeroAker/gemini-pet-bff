@@ -192,6 +192,19 @@ app.get('/v1/pet/diaries', async (c) => {
   return c.json({ ok: true, count: diaries.length, diaries });
 });
 
+// 查詢已儲存的程序性技能（Skills / SOP）
+app.get('/v1/pet/skills', async (c) => {
+  const auth = c.req.header('Authorization');
+  if (auth !== `Bearer ${c.env.BFF_ACCESS_TOKEN}`) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  const userId = c.req.query('uid') || 'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const skillMap = await stateSvc.getSkills(userId);
+  const skills = Object.values(skillMap);
+  return c.json({ ok: true, count: skills.length, skills });
+});
+
 // 查詢目前性格演化狀態與近期近況快照
 app.get('/v1/pet/persona', async (c) => {
   const auth = c.req.header('Authorization');
@@ -327,11 +340,12 @@ app.post('/v1/pet/interact', async (c) => {
   const searchableText = rawContent || `[傳送貼圖：${userStickerItem!.label}（${userStickerItem!.meaning}）]`;
 
   try {
-    const [state, history, memories, dreamProfile] = await Promise.all([
+    const [state, history, memories, dreamProfile, skills] = await Promise.all([
       stateSvc.getPetState(userId),
       stateSvc.getRecentHistory(userId),
       memorySvc.searchMemories(userId, searchableText),
       stateSvc.getDreamProfile(userId),
+      stateSvc.getSkills(userId),
     ]);
 
     const aiResult = await geminiSvc.generateReply({
@@ -344,6 +358,7 @@ app.post('/v1/pet/interact', async (c) => {
       memories,
       history,
       dreamProfile,
+      skills,
       stateSvc,
       waitUntil: (p) => c.executionCtx.waitUntil(p),
     });

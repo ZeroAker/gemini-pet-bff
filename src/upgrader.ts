@@ -7,6 +7,8 @@ export const PROTECTED_CORE_TOOLS = [
   'fetch_webpage',
   'request_self_upgrade',
   'check_upgrade_status',
+  'skill_view',
+  'skill_manage',
 ] as const;
 
 export class SelfUpgradeService {

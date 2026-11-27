@@ -89,6 +89,14 @@ export interface TodoItem {
   created_at: string;
 }
 
+export interface PetSkill {
+  name: string;        // 限小寫英文、數字與連字號 ^[a-z0-9-]{2,40}$
+  description: string; // 80 字內精簡簡介（用於 System Prompt 目錄）
+  content: string;     // Markdown SOP 內容（最多 2000 字）
+  tags?: string[];     // 最多 5 個標籤
+  updated_at: string;
+}
+
 export interface UpgradeStatus {
   status: 'running' | 'pr_created' | 'merged' | 'rejected' | 'failed';
   step?: string;

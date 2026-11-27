@@ -11,6 +11,8 @@ const PROTECTED_CORE_TOOLS = [
   'fetch_webpage',
   'request_self_upgrade',
   'check_upgrade_status',
+  'skill_view',
+  'skill_manage',
 ];
 
 const READ_ONLY_CORE_FILES = [
