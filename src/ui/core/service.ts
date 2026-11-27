@@ -254,22 +254,54 @@ export const moduleCore: UiCoreSkeletonModule = {
     }
 
     var lastPanelToggleAt = 0;
+    var panelCloseTimer = null;
+    var supportsClickThrough = Boolean(
+      window.electronPet && typeof window.electronPet.setIgnoreMouseEvents === 'function'
+    );
+    var lastElectronMouseIgnored = null;
+
+    function syncElectronClickThrough(ignore) {
+      if (!supportsClickThrough) return;
+      var nextIgnore = Boolean(ignore);
+      if (lastElectronMouseIgnored === nextIgnore) return;
+      lastElectronMouseIgnored = nextIgnore;
+      window.electronPet.setIgnoreMouseEvents(nextIgnore);
+    }
+
     function setChatPanelCollapsed(collapsed) {
       if (!desktopModeActive) return;
+      if (panelCloseTimer) {
+        clearTimeout(panelCloseTimer);
+        panelCloseTimer = null;
+      }
       if (collapsed) {
-        document.documentElement.classList.add('panel-collapsed-root');
-        document.body.classList.add('panel-collapsed');
+        if (!document.body.classList.contains('panel-collapsed')) {
+          document.body.classList.add('panel-closing');
+          panelCloseTimer = setTimeout(function () {
+            panelCloseTimer = null;
+            document.body.classList.remove('panel-closing');
+            document.documentElement.classList.add('panel-collapsed-root');
+            document.body.classList.add('panel-collapsed');
+            if (!supportsClickThrough && window.electronPet && typeof window.electronPet.setExpanded === 'function') {
+              window.electronPet.setExpanded(false);
+            }
+          }, 180);
+        }
+        if (supportsClickThrough && window.electronPet && typeof window.electronPet.setExpanded === 'function') {
+          window.electronPet.setExpanded(false);
+        }
       } else {
+        document.body.classList.remove('panel-closing');
         document.documentElement.classList.remove('panel-collapsed-root');
         document.body.classList.remove('panel-collapsed');
-      }
-      if (window.electronPet && typeof window.electronPet.setExpanded === 'function') {
-        window.electronPet.setExpanded(!collapsed);
-      }
-      if (!collapsed && chatEl) {
-        setTimeout(function () {
-          chatEl.scrollTop = chatEl.scrollHeight;
-        }, 50);
+        if (window.electronPet && typeof window.electronPet.setExpanded === 'function') {
+          window.electronPet.setExpanded(true);
+        }
+        if (chatEl) {
+          setTimeout(function () {
+            chatEl.scrollTop = chatEl.scrollHeight;
+          }, 50);
+        }
       }
     }
 
@@ -278,8 +310,8 @@ export const moduleCore: UiCoreSkeletonModule = {
       var now = Date.now();
       if (now - lastPanelToggleAt < 180) return;
       lastPanelToggleAt = now;
-      var willCollapse = !document.body.classList.contains('panel-collapsed');
-      setChatPanelCollapsed(willCollapse);
+      var isCurrentlyHidden = document.body.classList.contains('panel-collapsed') || document.body.classList.contains('panel-closing');
+      setChatPanelCollapsed(!isCurrentlyHidden);
     }
 
     window.togglePetChatPanel = togglePetChatPanel;
@@ -294,8 +326,29 @@ export const moduleCore: UiCoreSkeletonModule = {
         lastScreenY: 0
       };
 
+      if (supportsClickThrough) {
+        syncElectronClickThrough(true);
+        window.addEventListener('mousemove', function (e) {
+          if (dragState.active) {
+            syncElectronClickThrough(false);
+            return;
+          }
+          var targetEl = e.target && e.target.nodeType === 1 ? e.target : null;
+          var overStage = Boolean(targetEl && targetEl.closest && targetEl.closest('#petStage'));
+          var bubbleVisible = !document.body.classList.contains('panel-collapsed') && !document.body.classList.contains('panel-closing');
+          var overBubble = bubbleVisible && Boolean(targetEl && targetEl.closest && targetEl.closest('#desktopChatBubble'));
+          syncElectronClickThrough(!(overStage || overBubble));
+        });
+        document.addEventListener('mouseleave', function () {
+          if (!dragState.active) {
+            syncElectronClickThrough(true);
+          }
+        });
+      }
+
       petStageEl.addEventListener('mousedown', function (e) {
         if (e.button !== 0) return;
+        syncElectronClickThrough(false);
         dragState.active = true;
         dragState.moved = false;
         dragState.startScreenX = e.screenX;
