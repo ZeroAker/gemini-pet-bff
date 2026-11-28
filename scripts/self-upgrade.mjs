@@ -61,12 +61,12 @@ const HARD_TIMEOUT_MS = 20 * 60 * 1000; // 單一思考步驟總上限 20 分鐘
 const PREFLIGHT_TIMEOUT_MS = 45 * 1000; // 前置安全與複雜度審查上限 45 秒
 const HEARTBEAT_INTERVAL_MS = 20 * 1000; // 每 20 秒回寫一次心跳給 PWA
 const REDIS_TIMEOUT_MS = 5 * 1000; // 單次 Redis HTTP 請求逾時 5 秒
-const MAX_AGENT_TURNS = 20; // 最多執行 20 輪自主讀寫與修復步驟
+const MAX_AGENT_TURNS = 60; // 最多執行 60 輪自主讀寫與修復步驟（含多檔架構修改與多輪除錯驗證）
 const MAX_STEP_RETRIES = 2; // 同一模型遇到逾時/429/5xx 最多原地退避重試 2 次
 const MAX_FORBIDDEN_ATTEMPTS = 2; // 連續觸碰禁改路徑達 2 次即提早熔斷終止
-const DEFAULT_MAX_READ_LINES = 150;
+const DEFAULT_MAX_READ_LINES = 250;
 const MAX_SEARCH_MATCHES = 30;
-const KEEP_RECENT_TOOL_TURNS = 3;
+const KEEP_RECENT_TOOL_TURNS = 6;
 const PRUNABLE_TOOLS = new Set(['read_file', 'search_in_file', 'run_checks']);
 const READ_ONLY_TOOLS = new Set(['list_files', 'read_file', 'search_in_file']);
 const CRITICAL_STEPS = new Set(['merged', 'rejected', 'failed', 'pr_created']);
@@ -598,7 +598,7 @@ const AGENT_TOOL_DECLARATIONS = [
   {
     name: 'read_file',
     description:
-      '讀取檔案內容（會附帶行號）。若未指定 start_line / end_line 且超過 150 行，預設僅回傳前 150 行；大型檔案請先用 search_in_file 定位再指定行號分段讀取。',
+      '讀取檔案內容（會附帶行號）。若未指定 start_line / end_line 且超過 250 行，預設僅回傳前 250 行；大型檔案請先用 search_in_file 定位再指定行號分段讀取。',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -1661,7 +1661,7 @@ function buildSystemPrompt() {
     '',
     '【高效多步工作流】',
     '1. 首輪訊息已附上完整專案檔案清單，請直接針對需求相關檔案呼叫 search_in_file 或 read_file（可於同一輪並行呼叫多個讀取／搜尋工具）。',
-    '2. 面對超過 150 行的檔案，先用 search_in_file 搜尋關鍵字定位行號，再用 read_file 指定 start_line / end_line 局部讀取目標區段，接著以 patch_file 精準修改。',
+    '2. 面對超過 250 行的檔案，先用 search_in_file 搜尋關鍵字定位行號，再用 read_file 指定 start_line / end_line 局部讀取目標區段，接著以 patch_file 精準修改。',
     '3. 小範圍修改優先使用 patch_file；新增檔案或大重構使用 write_file。',
     '4. 完成所有檔案變更後，必須呼叫 run_checks 驗證安全性、插件註冊、UI 沙盒、TypeScript 編譯與 Wrangler 打包；若報錯請立即針對錯誤行數修復並重跑 run_checks。',
     '5. 確認 run_checks 全數通過後，立即呼叫 finish_upgrade 結束任務並提供簡短繁體中文 summary。',
@@ -1800,9 +1800,25 @@ async function main() {
     );
 
     const responseParts = await executeTurnFunctionCalls(functionCalls, session);
+    if (!session.outcome && MAX_AGENT_TURNS - turn <= 3) {
+      responseParts.push({
+        text: `⚠️ 系統提醒：目前剩餘自主步驟僅剩 ${MAX_AGENT_TURNS - turn} 步，請停止探索性讀取，盡快完成必要修改、呼叫 run_checks 並呼叫 finish_upgrade。`,
+      });
+    }
     contents.push({ role: 'user', parts: responseParts });
 
     if (session.outcome) break;
+  }
+
+  // 若達步數上限時已有修改但尚未執行最後一次 run_checks，嘗試自動驗證搶救；若通過則直接收尾
+  if (!session.outcome && session.dirty && !session.checksPassed) {
+    try {
+      await logStep('type_checking', '已達步驟上限，自動執行最終檢查以確認是否可安全提交...');
+      runAllChecks(session);
+      session.checksPassed = true;
+    } catch {
+      // 最終檢查未通過則照原流程還原並回報失敗
+    }
   }
 
   // 若剛好在最後一輪通過所有檢查但尚未呼叫 finish_upgrade，自動完成收尾而不丟棄成果
