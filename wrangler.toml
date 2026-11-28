@@ -23,5 +23,5 @@ directory = "./public"
 
 [[rules]]
 type = "Text"
-globs = ["**/*.html", "**/*.css", "src/ui/**/*.js"]
+globs = ["**/*.html", "**/*.css", "**/script.js"]
 fallthrough = true
