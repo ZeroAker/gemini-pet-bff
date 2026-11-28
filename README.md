@@ -14,10 +14,14 @@
   - `medium`（工具呼叫 / 整理）：`gemini-4-hydrogen` → `gemini-3.8-flash` → `gemini-3.5-flash-lite`
   - `complex`（深度分析 / 程式架構）：`gemini-4-argon` → `gemini-4-hydrogen` → `gemini-3.8-flash` → `gemini-3.5-flash-lite`
 - **多輪 Function Calling（最多 4 輪）**：完整保留 Gemini 3 / 4 工具呼叫所需的 `thoughtSignature`。
+- **工具宣告與執行解耦**：`src/tools.ts` 專責工具 Schema 宣告與按意圖動態掛載，內建核心工具實作獨立於 `src/tools/builtin-handlers.ts`，自訂插件則由 `src/plugins/registry.ts` 統一註冊。
 
 ### 2. 跨裝置分層記憶與深夜「發夢」系統
-- **即時短期記憶（Upstash Redis）**：保存最近 12 輪對話、好感度、活力值、無聊度、跨裝置待辦與分散式並發鎖（25s TTL）。
-- **語意長期記憶（Mem0 v3）**：自動檢索與非同步提煉使用者長期偏好與生活習慣。
+- **領域服務模組化（`src/services/*`）**：
+  - **即時短期記憶與狀態（`src/services/redis-state.service.ts`）**：透過 Upstash Redis 保存最近 12 輪對話、好感度、活力值、無聊度、跨裝置待辦、程序性技能（Skills / SOP）與分散式並發鎖（25s TTL）。
+  - **語意長期記憶（`src/services/mem0-memory.service.ts`）**：自動檢索與非同步提煉使用者長期偏好與生活習慣（Mem0 v3）。
+  - **AI 對話與路由代理（`src/services/gemini-agent.service.ts`）**：封裝 Vertex AI 呼叫、動態複雜度路由與多步工具迴圈。
+  - **相容轉發入口（`src/services.ts`）**：以 Facade 模式統一匯出各領域服務，保持外部呼叫端無縫相容。
 - **深夜發夢引擎（Cloudflare Cron Job / `src/dream.ts`）**：
   - 每日香港時間 **03:00** 由 Cloudflare Cron Trigger (`0 * * * *`) 自動執行（亦支援從 PWA「🌙 立即發夢」或 `POST /v1/pet/dream/trigger` 即時觸發）。
   - 整理當日 `dream_inbox` 對話，產出**第一人稱桌寵日記**（最多保留 60 篇）與翌日注入用的**近期近況快照**（`recent_snapshot`）。
@@ -35,12 +39,12 @@
   - 內建 `list_files`、`read_file`、`search_in_file`、`write_file`、`patch_file`、`delete_file`、`run_checks`、`finish_upgrade`、`reject_upgrade` 工具，並具備舊輪次長輸出自動摺疊（Context Pruning）機制。
   - 使用 `node:https` 原生 SSE 串流搭配 **5 分鐘 Idle Watchdog**、逾時自動原地重試、與 **20 秒 Redis 即時心跳**同步給 PWA 進度面板。
 - **多層核心保護防線**：
-  - **白名單隔離**：僅允許修改 `src/plugins/*.ts`、`src/ui.ts` 與 `src/ui/**`（包含各功能子資料夾下的 `.ts`、`.html`、`.css`）；核心架構檔案僅供唯讀參考。
-  - **核心不可破壞**：嚴禁刪除 `src/plugins/registry.ts`、`src/plugins/lifecycle.ts`、`src/plugins/stickers.ts`、`src/ui.ts`，禁止覆寫核心保留工具名稱與使用 `eval` / `new Function`。
+  - **白名單隔離**：僅允許修改 `src/plugins/*.ts`、`src/ui.ts` 與 `src/ui/**`（包含各功能子資料夾下的 `.ts`、`.html`、`.css`、`.js`）；核心架構檔案僅供唯讀參考。
+  - **核心不可破壞**：嚴禁刪除 `src/plugins/registry.ts`、`src/plugins/lifecycle.ts`、`src/plugins/stickers.ts`、`src/ui.ts`、`src/ui/ui-module-types.ts`、`src/ui/ui-events.ts`，禁止覆寫核心保留工具名稱與使用 `eval` / `new Function`。
   - **自動驗證閘門**：合併前強制通過跨檔 VM 沙盒 UI 契約檢查、所有內嵌 `<script>` 語法驗證與全專案 `npx tsc --noEmit`，通過後自動建分支、開 PR 並 Squash Merge 觸發 Cloudflare 部署。
 
 ### 5. 模組化 PWA 互動介面
-- 採用**按功能垂直拆分的子資料夾架構（`src/ui/<module>/`）**：每個功能模組獨立一個子資料夾（內含原生 `.html`、`.css` 與 `service.ts`），透過 `src/ui/ui-module-types.ts` 定義統一插槽介面，由 `src/ui.ts` 匯總組裝輸出於根路由 `/`。
+- 採用**按功能垂直拆分的子資料夾架構（`src/ui/<module>/`）**：每個功能模組獨立一個子資料夾（內含原生 `.html`、`.css`、`script.js` 與組裝定義檔 `service.ts`），透過 `src/ui/ui-module-types.ts` 定義統一插槽介面、`src/ui/ui-events.ts` 定義跨模組 `CustomEvent` 事件匯流排合約，最後由 `src/ui.ts` 匯總組裝輸出於根路由 `/`。
 - 支援**日／黃昏／夜動態主題**、情緒動畫頭像、好感／活力／無聊度進度條、快捷互動列（摸頭／餵零食／哄瞓覺／刷新狀態）與貼圖抽屜。
 - 內建五大功能模組資料夾：
   1. **`src/ui/core/`（核心骨架與聊天）**：全域與動態主題樣式、頂部狀態列、聊天視窗、快捷互動列、貼圖抽屜、連線設定彈窗與 `/v1/pet/interact`、`/v1/pet/state`、`/v1/pet/lifecycle/tick` 同步邏輯。
@@ -48,7 +52,7 @@
   3. **`src/ui/proactive/`（🔔 主動關懷排程面板）**：每日／固定間隔／閒置提醒規則、AI 隨機生成句子開關、主動關懷氣泡與升級完成通知。
   4. **`src/ui/care-game/`（🎮 餵食與互動小遊戲）**：香烤小魚乾／草莓蛋糕／星光特調咖啡餵食、猜拳大作戰、10 秒點擊接愛心挑戰。
   5. **`src/ui/diary-persona/`（📖 日記與性格演化面板）**：時間軸日記本、四軸性格條、共同梗標籤、對主人的印象、一鍵還原性格與手動「立即發夢」。
-- 預留 `#petStage` 區域供未來整合 3D 模型（`<model-viewer>` / WebGL）。
+- 預留 `#petStage` 區域供未來整合桌面透明視窗與 3D 模型（`<model-viewer>` / WebGL）。
 
 ---
 
@@ -64,40 +68,57 @@ gemini-pet-bff/
 │   ├── nightly-dream.mjs                # 深宵反思、日記生成、性格微調與 Mem0 精煉腳本
 │   └── self-upgrade.mjs                 # 20 輪多步自主寫碼、沙盒檢查、PR 與自動合併引擎
 ├── src/
-│   ├── index.ts                         # Hono 路由入口、認證 API 與 Cloudflare Cron Handler
+│   ├── index.ts                         # Hono 輕量路由掛載入口與 Cloudflare Cron Handler
+│   ├── middleware/
+│   │   └── auth.ts                      # 統一 Bearer Token 認證中介軟體
+│   ├── routes/
+│   │   └── pet-interact.ts              # /v1/pet/interact 對話協同、並發鎖與狀態更新控制器
+│   ├── services.ts                      # 領域服務統一匯出入口（Facade Re-export）
+│   ├── services/
+│   │   ├── redis-state.service.ts       # StateService：Upstash Redis 狀態、鎖、待辦、日記與技能
+│   │   ├── mem0-memory.service.ts       # MemoryService：Mem0 v3 長期語意記憶檢索與寫入
+│   │   └── gemini-agent.service.ts      # GeminiService：動態複雜度路由、Prompt 組裝與多輪工具呼叫
+│   ├── tools.ts                         # 工具 Schema 宣告、按意圖動態掛載與統一派發器
+│   ├── tools/
+│   │   └── builtin-handlers.ts          # 內建核心工具（時間、待辦、網頁、自我升級、Skills）實作
 │   ├── dream.ts                         # 深夜發夢引擎（日記生成、性格微調與 Mem0 精煉）
-│   ├── services.ts                      # StateService (Redis)、MemoryService (Mem0)、GeminiService (Vertex AI)
-│   ├── tools.ts                         # 核心工具實作、按意圖動態掛載與自訂插件沙盒派發器
-│   ├── types.ts                         # 全專案 TypeScript Strict 型別與 .html/.css 模組宣告
 │   ├── upgrader.ts                      # 自我升級任務派發器與核心保護工具清單
+│   ├── types.ts                         # 全專案 TypeScript Strict 核心型別定義
+│   ├── assets.d.ts                      # .html / .css / .js 靜態資源模組型別宣告
 │   ├── ui.ts                            # PWA HTML 組裝入口（核心受保護）
 │   ├── ui/                              # 按功能垂直模組化的前端子資料夾（可由自我升級維護）
-│   │   ├── ui-module-types.ts           # UI 功能模組共用介面定義
+│   │   ├── ui-module-types.ts           # UI 功能模組共用插槽介面定義（核心受保護）
+│   │   ├── ui-events.ts                 # UI 跨模組 CustomEvent 事件名稱與 Payload 合約（核心受保護）
 │   │   ├── core/                        # 核心骨架、聊天、貼圖、設定彈窗與狀態同步
 │   │   │   ├── header.html
 │   │   │   ├── main.html
 │   │   │   ├── footer.html
 │   │   │   ├── modal.html
 │   │   │   ├── styles.css
+│   │   │   ├── script.js
 │   │   │   └── service.ts
 │   │   ├── upgrade/                     # 頂部進度條與 Log Cabin 升級日誌面板
 │   │   │   ├── top.html
 │   │   │   ├── styles.css
+│   │   │   ├── script.js
 │   │   │   └── service.ts
 │   │   ├── proactive/                   # 主動關懷氣泡與排程管理面板
 │   │   │   ├── top.html
 │   │   │   ├── modal.html
 │   │   │   ├── styles.css
+│   │   │   ├── script.js
 │   │   │   └── service.ts
 │   │   ├── care-game/                   # 點心餵食、猜拳與 10 秒接愛心小遊戲
 │   │   │   ├── modal.html
 │   │   │   ├── styles.css
+│   │   │   ├── script.js
 │   │   │   └── service.ts
 │   │   └── diary-persona/               # 桌寵日記時間軸與四軸性格演化面板
 │   │       ├── modal.html
 │   │       ├── styles.css
+│   │       ├── script.js
 │   │       └── service.ts
-│   └── plugins/                         # 可由自我升級維護的插件沙盒
+│   └── plugins/                         # 可由自我升級維護的後端插件沙盒
 │       ├── registry.ts                  # 插件註冊表（禁止刪除）
 │       ├── lifecycle.ts                 # 每小時生理時鐘作息與無聊度規則（禁止刪除）
 │       ├── stickers.ts                  # 貼圖註冊表與提示目錄（禁止刪除）
@@ -107,3 +128,4 @@ gemini-pet-bff/
 ├── package.json
 ├── tsconfig.json
 └── wrangler.toml
+```
