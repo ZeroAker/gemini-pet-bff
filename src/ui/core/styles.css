@@ -796,10 +796,10 @@
     .avatar-comic-bubble {
       display: none;
       position: absolute;
-      bottom: calc(100% - 22px);
-      right: 68%;
+      bottom: calc(100% - 14px);
+      right: 56%;
       min-width: 118px;
-      max-width: min(260px, calc(100vw - 88px));
+      max-width: min(260px, calc(100vw - 140px));
       background: #fffdf9;
       color: #1e2235;
       border: 2.5px solid #1e2235;

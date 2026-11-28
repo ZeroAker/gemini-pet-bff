@@ -356,8 +356,12 @@ app.post('/v1/pet/proactive/claim', async (c) => {
   }
 
   try {
+    const suppressRuleIds = Array.isArray(body.suppressRuleIds)
+      ? body.suppressRuleIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+      : undefined;
     const result = await claimProactiveRuleTriggerForApi(userId, stateSvc, {
       ruleId,
+      suppressRuleIds,
       timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
       force: Boolean(body.force),
     });

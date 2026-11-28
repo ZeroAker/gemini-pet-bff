@@ -705,7 +705,7 @@
       }
     }
 
-    async function claimProactiveRuleOnCloud(ruleId, forceTriggerFirst) {
+    async function claimProactiveRuleOnCloud(ruleId, suppressRuleIds, forceTriggerFirst) {
       var cfg = getConfig();
       if (!cfg.token) {
         return { ok: true, claimed: true, offline: true };
@@ -720,6 +720,7 @@
           body: JSON.stringify({
             uid: cfg.uid,
             ruleId: ruleId,
+            suppressRuleIds: Array.isArray(suppressRuleIds) ? suppressRuleIds : [],
             timezone: getClientTimeZone(),
             force: Boolean(forceTriggerFirst)
           })
@@ -758,14 +759,28 @@
         var todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
         var nowMinutes = now.getHours() * 60 + now.getMinutes();
         var idleMinutes = (nowMs - lastUserActivityAt) / 60000;
-        var triggeredRule = null;
+
+        if (!forceTriggerFirst) {
+          var GLOBAL_COOLDOWN_MS = 3 * 60 * 1000;
+          for (var c = 0; c < store.rules.length; c++) {
+            var prevAt = store.rules[c] && store.rules[c].lastTriggeredAt;
+            if (prevAt) {
+              var prevMs = Date.parse(prevAt);
+              if (!isNaN(prevMs) && nowMs - prevMs >= 0 && nowMs - prevMs < GLOBAL_COOLDOWN_MS) {
+                return false;
+              }
+            }
+          }
+        }
+
+        var dueRules = [];
 
         for (var i = 0; i < store.rules.length; i++) {
           var rule = store.rules[i];
           if (!rule.enabled) continue;
 
           if (forceTriggerFirst) {
-            triggeredRule = rule;
+            dueRules.push(rule);
             break;
           }
 
@@ -781,35 +796,35 @@
               }
             }
             if (diff >= 0 && diff <= 120 && lastDateStr !== todayStr) {
-              triggeredRule = rule;
-              break;
+              dueRules.push(rule);
             }
           } else if (rule.scheduleType === 'interval') {
             var intervalMs = (rule.intervalMinutes || 60) * 60000;
             var refMs = Date.parse(rule.lastTriggeredAt || rule.createdAt || nowIso);
             if (!isNaN(refMs) && (nowMs - refMs >= intervalMs)) {
-              triggeredRule = rule;
-              break;
+              dueRules.push(rule);
             }
           } else if (rule.scheduleType === 'idle') {
             var needIdle = rule.intervalMinutes || 120;
             var lastTrigMs = rule.lastTriggeredAt ? Date.parse(rule.lastTriggeredAt) : 0;
             var cooldownOk = !lastTrigMs || isNaN(lastTrigMs) || (nowMs - lastTrigMs >= needIdle * 60000);
             if (idleMinutes >= needIdle && cooldownOk) {
-              triggeredRule = rule;
-              break;
+              dueRules.push(rule);
             }
           }
         }
 
-        if (!triggeredRule) return false;
+        if (dueRules.length === 0) return false;
 
-        var claimRes = await claimProactiveRuleOnCloud(triggeredRule.id, forceTriggerFirst);
+        var triggeredRule = dueRules[0];
+        var suppressRuleIds = dueRules.slice(1).map(function (r) { return r.id; });
+
+        var claimRes = await claimProactiveRuleOnCloud(triggeredRule.id, suppressRuleIds, forceTriggerFirst);
         if (!claimRes.claimed) {
           return false;
         }
         if (claimRes.offline) {
-          triggeredRule.lastTriggeredAt = nowIso;
+          dueRules.forEach(function (r) { r.lastTriggeredAt = nowIso; });
           saveProactiveStore(store);
         } else if (claimRes.rule) {
           triggeredRule = claimRes.rule;

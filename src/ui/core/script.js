@@ -273,8 +273,20 @@
         comicBubbleRemoveTimer = null;
       }
       if (!avatarComicBubbleEl) return;
+      var shouldRestoreCollapsedWindow = function () {
+        if (
+          desktopModeActive &&
+          document.body.classList.contains('panel-collapsed') &&
+          !document.body.classList.contains('panel-closing') &&
+          window.electronPet &&
+          typeof window.electronPet.setExpanded === 'function'
+        ) {
+          window.electronPet.setExpanded(false);
+        }
+      };
       if (immediate) {
         avatarComicBubbleEl.classList.remove('show', 'hiding');
+        shouldRestoreCollapsedWindow();
         return;
       }
       if (avatarComicBubbleEl.classList.contains('show')) {
@@ -285,9 +297,11 @@
           if (avatarComicBubbleEl) {
             avatarComicBubbleEl.classList.remove('hiding');
           }
+          shouldRestoreCollapsedWindow();
         }, 250);
       } else {
         avatarComicBubbleEl.classList.remove('hiding');
+        shouldRestoreCollapsedWindow();
       }
     }
 
@@ -306,6 +320,15 @@
       if (comicBubbleRemoveTimer) {
         clearTimeout(comicBubbleRemoveTimer);
         comicBubbleRemoveTimer = null;
+      }
+
+      // 桌寵收合時 Electron 視窗會縮至立繪大小，需暫時展開視窗空間以免漫畫氣泡被邊界裁切
+      if (
+        document.body.classList.contains('panel-collapsed') &&
+        window.electronPet &&
+        typeof window.electronPet.setExpanded === 'function'
+      ) {
+        window.electronPet.setExpanded(true);
       }
 
       avatarComicBubbleContentEl.innerHTML = '';
@@ -428,7 +451,9 @@
           var overStage = Boolean(targetEl && targetEl.closest && targetEl.closest('#petStage'));
           var bubbleVisible = !document.body.classList.contains('panel-collapsed') && !document.body.classList.contains('panel-closing');
           var overBubble = bubbleVisible && Boolean(targetEl && targetEl.closest && targetEl.closest('#desktopChatBubble'));
-          syncElectronClickThrough(!(overStage || overBubble));
+          var comicVisible = Boolean(avatarComicBubbleEl && avatarComicBubbleEl.classList.contains('show'));
+          var overComicBubble = comicVisible && Boolean(targetEl && targetEl.closest && targetEl.closest('#avatarComicBubble'));
+          syncElectronClickThrough(!(overStage || overBubble || overComicBubble));
         });
         document.addEventListener('mouseleave', function () {
           if (!dragState.active) {
@@ -921,17 +946,41 @@
     var lastSyncedActiveAt = '';
     var isSyncingHistory = false;
 
+    var lastKnownSyncedBotKey = '';
+
     async function syncChatHistory() {
       var cfg = getConfig();
       if (!cfg.token || isSyncingHistory) return false;
       isSyncingHistory = true;
       try {
+        var prevLog = loadLocalLog();
+        var prevLastBot = null;
+        for (var p = prevLog.length - 1; p >= 0; p--) {
+          if (prevLog[p] && prevLog[p].role === 'bot') {
+            prevLastBot = prevLog[p];
+            break;
+          }
+        }
+        var prevKey = lastKnownSyncedBotKey || (prevLastBot ? ((prevLastBot.text || '') + '|' + (prevLastBot.time || '')) : '');
+
         var res = await fetch('/v1/pet/history?uid=' + encodeURIComponent(cfg.uid), {
           headers: { 'Authorization': 'Bearer ' + cfg.token }
         });
         var data = await res.json();
         if (data && data.ok && Array.isArray(data.history)) {
           saveLocalLog(data.history);
+          var nextLastBot = null;
+          for (var n = data.history.length - 1; n >= 0; n--) {
+            if (data.history[n] && data.history[n].role === 'bot') {
+              nextLastBot = data.history[n];
+              break;
+            }
+          }
+          var nextKey = nextLastBot ? ((nextLastBot.text || '') + '|' + (nextLastBot.time || '')) : '';
+          if (nextKey) {
+            lastKnownSyncedBotKey = nextKey;
+          }
+
           if (!sendBtn.disabled) {
             chatEl.innerHTML = '';
             if (data.history.length === 0) {
@@ -942,6 +991,9 @@
                 renderMessage(item.role, item.text, item.meta, item.time, item.sticker || null);
               });
               isInitialHistoryHydrating = false;
+              if (prevKey && nextKey && nextKey !== prevKey && isDesktopChatBubbleClosed()) {
+                showAvatarComicBubble(nextLastBot.text, nextLastBot.sticker || null);
+              }
             }
           }
           return true;

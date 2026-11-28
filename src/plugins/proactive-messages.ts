@@ -2768,6 +2768,7 @@ export async function claimProactiveRuleTriggerForApi(
   stateSvc: PluginContext['stateSvc'],
   payload: {
     ruleId: string;
+    suppressRuleIds?: string[];
     timezone?: string;
     force?: boolean;
   }
@@ -2796,8 +2797,18 @@ export async function claimProactiveRuleTriggerForApi(
   const nowMs = now.getTime();
   const nowIso = now.toISOString();
   const tz = asTrimmedString(payload.timezone) || store.timezone || DEFAULT_TIMEZONE;
+  const GLOBAL_PROACTIVE_COOLDOWN_MS = 3 * 60 * 1000;
 
   if (!force) {
+    // 跨裝置全域冷卻檢查：若最近 3 分鐘內已有任何規則觸發過，避免同時段多條排程連環發送
+    for (const r of store.rules) {
+      if (!r.lastTriggeredAt) continue;
+      const prevMs = Date.parse(r.lastTriggeredAt);
+      if (!Number.isNaN(prevMs) && nowMs - prevMs >= 0 && nowMs - prevMs < GLOBAL_PROACTIVE_COOLDOWN_MS) {
+        return { claimed: false, reason: 'global_proactive_cooldown', store, rule };
+      }
+    }
+
     if (rule.scheduleType === 'daily') {
       const todayStr = getZonedDateTime(now, tz).dateStr;
       if (rule.lastTriggeredAt) {
@@ -2825,6 +2836,14 @@ export async function claimProactiveRuleTriggerForApi(
   }
 
   rule.lastTriggeredAt = nowIso;
+  if (Array.isArray(payload.suppressRuleIds) && payload.suppressRuleIds.length > 0) {
+    const suppressSet = new Set(payload.suppressRuleIds.map((id) => asTrimmedString(id)).filter(Boolean));
+    for (const r of store.rules) {
+      if (r.id !== rule.id && suppressSet.has(r.id)) {
+        r.lastTriggeredAt = nowIso;
+      }
+    }
+  }
   await saveUserStore(store, ctx);
   return { claimed: true, store, rule };
 }
