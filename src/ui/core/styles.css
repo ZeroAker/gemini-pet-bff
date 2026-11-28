@@ -602,6 +602,8 @@
     .modal,
     .modal-card,
     #proactiveBubble,
+    #avatarComicBubble,
+    .avatar-comic-bubble,
     #upgradeBar,
     #titleProgressSlot {
       -webkit-app-region: no-drag;
@@ -790,6 +792,135 @@
     }
     body.mode-desktop.panel-collapsed:not(.panel-closing) .desktop-chat-bubble {
       display: none !important;
+    }
+    .avatar-comic-bubble {
+      display: none;
+      position: absolute;
+      bottom: calc(100% - 22px);
+      right: 68%;
+      min-width: 118px;
+      max-width: min(260px, calc(100vw - 88px));
+      background: #fffdf9;
+      color: #1e2235;
+      border: 2.5px solid #1e2235;
+      border-radius: 18px 18px 4px 18px;
+      padding: 10px 14px;
+      box-shadow: 4px 5px 0px #1e2235, 0 10px 24px rgba(0, 0, 0, 0.36);
+      z-index: 145;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-app-region: no-drag;
+      pointer-events: auto;
+      transform-origin: bottom right;
+      transition: transform 0.16s ease, box-shadow 0.16s ease;
+    }
+    body.mode-desktop .avatar-comic-bubble.show {
+      display: block;
+      animation: comicBubblePopIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    }
+    body.mode-desktop .avatar-comic-bubble.hiding {
+      display: block;
+      pointer-events: none;
+      animation: comicBubbleFadeOut 0.24s ease forwards;
+    }
+    body.mode-desktop:not(.panel-collapsed):not(.panel-closing) .avatar-comic-bubble {
+      display: none !important;
+    }
+    .avatar-comic-bubble:hover {
+      transform: translateY(-2px) scale(1.02);
+      box-shadow: 5px 6px 0px #1e2235, 0 12px 26px rgba(0, 0, 0, 0.42);
+    }
+    /* 漫畫風對話框右下角指向 Avatar 的雙層三角形尾巴 */
+    .avatar-comic-bubble::before {
+      content: '';
+      position: absolute;
+      bottom: -14px;
+      right: 10px;
+      width: 0;
+      height: 0;
+      border-style: solid;
+      border-width: 14px 0 0 16px;
+      border-color: #1e2235 transparent transparent transparent;
+    }
+    .avatar-comic-bubble::after {
+      content: '';
+      position: absolute;
+      bottom: -9px;
+      right: 12px;
+      width: 0;
+      height: 0;
+      border-style: solid;
+      border-width: 11px 0 0 13px;
+      border-color: #fffdf9 transparent transparent transparent;
+    }
+    .avatar-comic-bubble-content {
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.48;
+      color: #1e2235;
+      max-height: min(145px, calc(100dvh - 235px));
+      overflow-y: auto;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(30, 34, 53, 0.28) transparent;
+    }
+    .avatar-comic-bubble-content::-webkit-scrollbar {
+      width: 4px;
+    }
+    .avatar-comic-bubble-content::-webkit-scrollbar-thumb {
+      background: rgba(30, 34, 53, 0.28);
+      border-radius: 4px;
+    }
+    .avatar-comic-bubble-text {
+      white-space: pre-wrap;
+    }
+    .avatar-comic-bubble-text p {
+      margin: 0 0 4px 0;
+    }
+    .avatar-comic-bubble-text p:last-child {
+      margin-bottom: 0;
+    }
+    .avatar-comic-bubble-sticker {
+      width: 56px;
+      height: 56px;
+      object-fit: contain;
+      align-self: center;
+      filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.18));
+    }
+    @keyframes comicBubblePopIn {
+      0% {
+        opacity: 0;
+        transform: scale(0.55) translate(14px, 14px) rotate(4deg);
+      }
+      70% {
+        opacity: 1;
+        transform: scale(1.04) translate(0, 0) rotate(-1deg);
+      }
+      100% {
+        opacity: 1;
+        transform: scale(1) translate(0, 0) rotate(0deg);
+      }
+    }
+    @keyframes comicBubbleFadeOut {
+      0% {
+        opacity: 1;
+        transform: scale(1) translate(0, 0);
+      }
+      100% {
+        opacity: 0;
+        transform: scale(0.82) translate(8px, 8px);
+      }
+    }
+    @media (max-width: 420px) {
+      .avatar-comic-bubble {
+        right: 45%;
+        max-width: calc(100vw - 40px);
+      }
     }
     #chat {
       flex: 1;
