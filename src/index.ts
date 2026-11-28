@@ -3,7 +3,7 @@ import { DreamService } from './dream';
 import { requireBffAuth } from './middleware/auth';
 import { computeNextLifecycleState } from './plugins/lifecycle';
 import { petCareGamePlugin } from './plugins/pet-care-game';
-import { getUserStickers, STICKER_PACK_VERSION } from './plugins/stickers';
+import { getStickerById, getUserStickers, STICKER_PACK_VERSION, toStickerPayload } from './plugins/stickers';
 import { handlePetInteract } from './routes/pet-interact';
 import { GeminiService, StateService } from './services';
 import type { Env, PetState } from './types';
@@ -129,6 +129,23 @@ app.get('/v1/pet/state', async (c) => {
   const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
   const state = await stateSvc.getPetState(userId);
   return c.json({ ok: true, pet_state: state });
+});
+
+app.get('/v1/pet/history', async (c) => {
+  const userId = c.req.query('uid') || 'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const turns = await stateSvc.getRecentHistory(userId);
+  const history = turns.map((t) => {
+    const st = t.sticker ? getStickerById(t.sticker) : undefined;
+    return {
+      role: t.role === 'assistant' ? 'bot' : 'user',
+      text: t.content || '',
+      meta: t.meta || '',
+      time: typeof t.ts === 'number' ? t.ts : null,
+      sticker: st ? toStickerPayload(st) : null,
+    };
+  });
+  return c.json({ ok: true, count: history.length, history });
 });
 
 app.post('/v1/pet/lifecycle/tick', async (c) => {

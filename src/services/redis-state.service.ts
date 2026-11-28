@@ -106,7 +106,7 @@ export class StateService {
 
   async appendHistory(userId: string, turns: ChatTurn[]): Promise<void> {
     const current = await this.getRecentHistory(userId);
-    const updated = [...current, ...turns].slice(-12);
+    const updated = [...current, ...turns].slice(-50);
     await this.command(['SET', `history:${userId}`, JSON.stringify(updated)]);
   }
 

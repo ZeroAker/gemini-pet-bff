@@ -86,9 +86,22 @@ export async function handlePetInteract(c: Context<{ Bindings: Env }>) {
     const botStickerItem = getBotStickerById(aiResult.sticker);
     const botStickerPayload = botStickerItem ? toStickerPayload(botStickerItem) : null;
 
+    const botMetaParts: string[] = [];
+    if (aiResult.meta?.model_used) botMetaParts.push(aiResult.meta.model_used);
+    if (aiResult.meta?.tools_used && aiResult.meta.tools_used.length > 0) {
+      botMetaParts.push(`工具: ${aiResult.meta.tools_used.join(', ')}`);
+    }
+    const botMetaStr = botMetaParts.join(' · ');
+
     const newTurns = [
-      { role: 'user' as const, content: rawContent, sticker: userStickerId },
-      { role: 'assistant' as const, content: aiResult.reply, sticker: botStickerItem?.id },
+      { role: 'user' as const, content: rawContent, sticker: userStickerId, ts: nowMs },
+      {
+        role: 'assistant' as const,
+        content: aiResult.reply,
+        sticker: botStickerItem?.id,
+        ts: nowMs + 1,
+        meta: botMetaStr || undefined,
+      },
     ];
 
     const userReadableTurn = `${userStickerItem ? `[傳送貼圖：${userStickerItem.label}] ` : ''}${rawContent}`.trim();

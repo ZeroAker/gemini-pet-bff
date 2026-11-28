@@ -66,7 +66,7 @@
     }
 
     function saveLocalLog(list) {
-      localStorage.setItem('pet_ui_log', JSON.stringify(list.slice(-30)));
+      localStorage.setItem('pet_ui_log', JSON.stringify(list.slice(-50)));
     }
 
     function clampVal(num) {
@@ -700,12 +700,13 @@
     document.getElementById('saveSettingsBtn').onclick = function () {
       localStorage.setItem('pet_bff_token', tokenInput.value.trim());
       localStorage.setItem('pet_user_id', uidInput.value.trim() || 'zero_main');
+      lastSyncedActiveAt = '';
       modalEl.classList.remove('open');
       if (typeof window.refreshUpgradeStatusOnce === 'function') {
         window.refreshUpgradeStatusOnce();
       }
       if (typeof window.syncPetStateFromServer === 'function') {
-        window.syncPetStateFromServer();
+        window.syncPetStateFromServer(true);
       }
     };
 
@@ -808,6 +809,38 @@
       return null;
     }
 
+    var lastSyncedActiveAt = '';
+    var isSyncingHistory = false;
+
+    async function syncChatHistory() {
+      var cfg = getConfig();
+      if (!cfg.token || isSyncingHistory) return false;
+      isSyncingHistory = true;
+      try {
+        var res = await fetch('/v1/pet/history?uid=' + encodeURIComponent(cfg.uid), {
+          headers: { 'Authorization': 'Bearer ' + cfg.token }
+        });
+        var data = await res.json();
+        if (data && data.ok && Array.isArray(data.history)) {
+          saveLocalLog(data.history);
+          if (!sendBtn.disabled) {
+            chatEl.innerHTML = '';
+            if (data.history.length === 0) {
+              renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天或點「🎮 餵食與遊戲」陪我玩囉！', '', Date.now());
+            } else {
+              data.history.forEach(function (item) {
+                renderMessage(item.role, item.text, item.meta, item.time, item.sticker || null);
+              });
+            }
+          }
+          return true;
+        }
+      } catch (e) {} finally {
+        isSyncingHistory = false;
+      }
+      return false;
+    }
+
     async function syncPetState(withFeedback) {
       var cfg = getConfig();
       if (!cfg.token) return null;
@@ -817,6 +850,11 @@
         });
         var data = await res.json();
         if (data && data.ok && data.pet_state) {
+          var serverActiveAt = data.pet_state.last_active_at || '';
+          if (withFeedback || (serverActiveAt && serverActiveAt !== lastSyncedActiveAt) || !lastSyncedActiveAt) {
+            lastSyncedActiveAt = serverActiveAt || 'synced';
+            syncChatHistory();
+          }
           var ext = data.pet_state.extra;
           if (!ext || typeof ext !== 'object' || ext.boredom === undefined || !ext.activity) {
             return await triggerLifecycleTick(!withFeedback);
@@ -834,6 +872,7 @@
 
     window.triggerLifecycleTick = triggerLifecycleTick;
     window.syncPetStateFromServer = syncPetState;
+    window.syncChatHistoryFromServer = syncChatHistory;
     window.petStageElement = petStageEl;
 
     // ==================== [STICKERS] ====================
@@ -960,6 +999,9 @@
         triggerAvatarBounce();
 
         if (data.pet_state) {
+          if (data.pet_state.last_active_at) {
+            lastSyncedActiveAt = data.pet_state.last_active_at;
+          }
           var rawExtra = (data.pet_state.extra && typeof data.pet_state.extra === 'object') ? data.pet_state.extra : {};
           var interactExtra = {
             boredom: 0,

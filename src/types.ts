@@ -81,6 +81,8 @@ export interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
   sticker?: string;
+  ts?: number;
+  meta?: string;
 }
 
 export interface TodoItem {
