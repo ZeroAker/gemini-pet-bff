@@ -309,7 +309,13 @@
       if (!desktopModeActive || !avatarComicBubbleEl || !avatarComicBubbleContentEl) return;
       if (!isDesktopChatBubbleClosed()) return;
 
-      var cleanText = typeof text === 'string' ? text.trim() : '';
+      var cleanText = typeof text === 'string' ? text.replace(/\s+/g, ' ').trim() : '';
+      if (cleanText) {
+        var comicChars = Array.from(cleanText);
+        if (comicChars.length > 50) {
+          cleanText = comicChars.slice(0, 50).join('') + '...';
+        }
+      }
       var hasSticker = Boolean(stickerObj && stickerObj.url);
       if (!cleanText && !hasSticker) return;
 

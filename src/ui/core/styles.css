@@ -798,13 +798,13 @@
       position: absolute;
       bottom: calc(100% - 14px);
       right: 56%;
-      min-width: 118px;
-      max-width: min(260px, calc(100vw - 140px));
+      min-width: 180px;
+      max-width: min(340px, calc(100vw - 120px));
       background: #fffdf9;
       color: #1e2235;
       border: 2.5px solid #1e2235;
-      border-radius: 18px 18px 4px 18px;
-      padding: 10px 14px;
+      border-radius: 20px 20px 4px 20px;
+      padding: 14px 18px;
       box-shadow: 4px 5px 0px #1e2235, 0 10px 24px rgba(0, 0, 0, 0.36);
       z-index: 145;
       cursor: pointer;
@@ -855,11 +855,11 @@
       border-color: #fffdf9 transparent transparent transparent;
     }
     .avatar-comic-bubble-content {
-      font-size: 13px;
+      font-size: 15px;
       font-weight: 600;
-      line-height: 1.48;
+      line-height: 1.55;
       color: #1e2235;
-      max-height: min(145px, calc(100dvh - 235px));
+      max-height: min(200px, calc(100dvh - 200px));
       overflow-y: auto;
       word-break: break-word;
       overflow-wrap: anywhere;
@@ -886,8 +886,8 @@
       margin-bottom: 0;
     }
     .avatar-comic-bubble-sticker {
-      width: 56px;
-      height: 56px;
+      width: 64px;
+      height: 64px;
       object-fit: contain;
       align-self: center;
       filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.18));
