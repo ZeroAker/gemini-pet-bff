@@ -8,7 +8,7 @@
     };
 
     var chatEl = document.getElementById('chat');
-    var inputEl = document.getElementById('input');
+    var inputEl = document.getElementById('msgInput') || document.getElementById('input');
     var sendBtn = document.getElementById('sendBtn');
     var petEmojiEl = document.getElementById('petEmoji');
     var petStatsEl = document.getElementById('petStats');
@@ -28,6 +28,8 @@
     var quickRefreshBtnEl = document.getElementById('quickRefreshBtn');
     var petStageEl = document.getElementById('petStage');
     var petAvatarImgEl = document.getElementById('petAvatarImg');
+    var avatarComicBubbleEl = document.getElementById('avatarComicBubble');
+    var avatarComicBubbleContentEl = document.getElementById('avatarComicBubbleContent');
     var modalEl = document.getElementById('settingsModal');
     var tokenInput = document.getElementById('tokenInput');
     var uidInput = document.getElementById('uidInput');
@@ -240,10 +242,113 @@
 
     var lastPanelToggleAt = 0;
     var panelCloseTimer = null;
+    var comicBubbleFadeTimer = null;
+    var comicBubbleRemoveTimer = null;
+    var isInitialHistoryHydrating = false;
     var supportsClickThrough = Boolean(
       window.electronPet && typeof window.electronPet.setIgnoreMouseEvents === 'function'
     );
     var lastElectronMouseIgnored = null;
+
+    function isDesktopChatBubbleClosed() {
+      if (!desktopModeActive) return false;
+      var bubbleEl = document.getElementById('desktopChatBubble');
+      if (!bubbleEl) return true;
+      if (document.body.classList.contains('panel-collapsed') || document.body.classList.contains('panel-closing')) {
+        return true;
+      }
+      if (bubbleEl.classList.contains('hidden') || bubbleEl.classList.contains('closed')) {
+        return true;
+      }
+      return false;
+    }
+
+    function hideAvatarComicBubble(immediate) {
+      if (comicBubbleFadeTimer) {
+        clearTimeout(comicBubbleFadeTimer);
+        comicBubbleFadeTimer = null;
+      }
+      if (comicBubbleRemoveTimer) {
+        clearTimeout(comicBubbleRemoveTimer);
+        comicBubbleRemoveTimer = null;
+      }
+      if (!avatarComicBubbleEl) return;
+      if (immediate) {
+        avatarComicBubbleEl.classList.remove('show', 'hiding');
+        return;
+      }
+      if (avatarComicBubbleEl.classList.contains('show')) {
+        avatarComicBubbleEl.classList.remove('show');
+        avatarComicBubbleEl.classList.add('hiding');
+        comicBubbleRemoveTimer = setTimeout(function () {
+          comicBubbleRemoveTimer = null;
+          if (avatarComicBubbleEl) {
+            avatarComicBubbleEl.classList.remove('hiding');
+          }
+        }, 250);
+      } else {
+        avatarComicBubbleEl.classList.remove('hiding');
+      }
+    }
+
+    function showAvatarComicBubble(text, stickerObj) {
+      if (!desktopModeActive || !avatarComicBubbleEl || !avatarComicBubbleContentEl) return;
+      if (!isDesktopChatBubbleClosed()) return;
+
+      var cleanText = typeof text === 'string' ? text.trim() : '';
+      var hasSticker = Boolean(stickerObj && stickerObj.url);
+      if (!cleanText && !hasSticker) return;
+
+      if (comicBubbleFadeTimer) {
+        clearTimeout(comicBubbleFadeTimer);
+        comicBubbleFadeTimer = null;
+      }
+      if (comicBubbleRemoveTimer) {
+        clearTimeout(comicBubbleRemoveTimer);
+        comicBubbleRemoveTimer = null;
+      }
+
+      avatarComicBubbleContentEl.innerHTML = '';
+
+      if (hasSticker) {
+        var stImg = document.createElement('img');
+        stImg.className = 'avatar-comic-bubble-sticker';
+        stImg.src = stickerObj.url;
+        stImg.alt = stickerObj.meaning || stickerObj.id || '貼圖';
+        stImg.draggable = false;
+        avatarComicBubbleContentEl.appendChild(stImg);
+      }
+
+      if (cleanText) {
+        var txtNode = document.createElement('div');
+        txtNode.className = 'avatar-comic-bubble-text';
+        txtNode.innerHTML = renderMarkdownSafe(cleanText);
+        avatarComicBubbleContentEl.appendChild(txtNode);
+      }
+
+      avatarComicBubbleEl.classList.remove('hiding', 'show');
+      void avatarComicBubbleEl.offsetWidth;
+      avatarComicBubbleEl.classList.add('show');
+
+      comicBubbleFadeTimer = setTimeout(function () {
+        comicBubbleFadeTimer = null;
+        hideAvatarComicBubble(false);
+      }, 10000);
+    }
+
+    window.showAvatarComicBubble = showAvatarComicBubble;
+    window.hideAvatarComicBubble = hideAvatarComicBubble;
+
+    if (avatarComicBubbleEl) {
+      avatarComicBubbleEl.addEventListener('mousedown', function (e) {
+        e.stopPropagation();
+      });
+      avatarComicBubbleEl.addEventListener('click', function (e) {
+        e.stopPropagation();
+        hideAvatarComicBubble(true);
+        setChatPanelCollapsed(false);
+      });
+    }
 
     function syncElectronClickThrough(ignore) {
       if (!supportsClickThrough) return;
@@ -276,6 +381,7 @@
           window.electronPet.setExpanded(false);
         }
       } else {
+        hideAvatarComicBubble(true);
         document.body.classList.remove('panel-closing');
         document.documentElement.classList.remove('panel-collapsed-root');
         document.body.classList.remove('panel-collapsed');
@@ -678,6 +784,9 @@
       }
       chatEl.appendChild(wrap);
       chatEl.scrollTop = chatEl.scrollHeight;
+      if (role === 'bot' && !isInitialHistoryHydrating && isDesktopChatBubbleClosed()) {
+        showAvatarComicBubble(text, stickerObj);
+      }
       return wrap;
     }
 
@@ -828,9 +937,11 @@
             if (data.history.length === 0) {
               renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天或點「🎮 餵食與遊戲」陪我玩囉！', '', Date.now());
             } else {
+              isInitialHistoryHydrating = true;
               data.history.forEach(function (item) {
                 renderMessage(item.role, item.text, item.meta, item.time, item.sticker || null);
               });
+              isInitialHistoryHydrating = false;
             }
           }
           return true;
@@ -1310,9 +1421,11 @@
     if (initialLog.length === 0) {
       renderMessage('bot', '嗨主人！點右上角「設定」填入你的連線 Token 後，就可以正式開始聊天或點「🎮 餵食與遊戲」陪我玩囉！', '', Date.now());
     } else {
+      isInitialHistoryHydrating = true;
       initialLog.forEach(function (item) {
         renderMessage(item.role, item.text, item.meta, item.time, item.sticker || null);
       });
+      isInitialHistoryHydrating = false;
     }
 
     loadStickerPack();
