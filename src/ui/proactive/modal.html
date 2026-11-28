@@ -45,19 +45,25 @@
           <input id="ruleAiGenInput" type="checkbox" />
           <span>✨ 每次由 AI 隨機生成主題句子（依標題與提示即時生成，失敗時退回原訊息）</span>
         </label>
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:2px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:2px;flex-wrap:wrap;">
           <button class="btn-icon" id="testProactiveBubbleBtn">立即檢查到期</button>
-          <button class="btn-primary" id="addRuleBtn">＋ 新增排程</button>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button class="btn-icon" id="cancelEditRuleBtn" style="display:none;">取消編輯</button>
+            <button class="btn-primary" id="addRuleBtn">＋ 新增排程</button>
+          </div>
         </div>
       </div>
 
       <div>
-        <label style="margin-bottom:6px;">目前排程列表</label>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;">
+          <label style="margin-bottom:0;">目前排程列表</label>
+          <span class="proactive-sync-status" id="proactiveSyncStatus"></span>
+        </div>
         <div class="rule-list" id="proactiveRuleList"></div>
       </div>
 
       <div class="modal-actions">
-        <button class="btn-icon" id="syncProactiveCloudBtn">☁️ 同步至雲端工具</button>
+        <button class="btn-icon" id="syncProactiveCloudBtn">☁️ 立即同步雲端</button>
         <button class="btn-icon" id="closeProactiveModalBtn">關閉</button>
       </div>
     </div>

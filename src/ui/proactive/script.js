@@ -18,8 +18,13 @@
     var proactiveBubbleIconEl = document.getElementById('proactiveBubbleIcon');
     var proactiveBubbleTitleEl = document.getElementById('proactiveBubbleTitle');
     var proactiveBubbleTextEl = document.getElementById('proactiveBubbleText');
+    var proactiveSyncStatusEl = document.getElementById('proactiveSyncStatus');
+    var addRuleBtnEl = document.getElementById('addRuleBtn');
+    var cancelEditRuleBtnEl = document.getElementById('cancelEditRuleBtn');
     var activeBubbleRule = null;
+    var editingRuleId = null;
     var isGeneratingProactiveAi = false;
+    var isCheckingDueRules = false;
     var isCheckingUpgradeTrack = false;
     var upgradeWatchTimer = null;
 
@@ -79,6 +84,114 @@
 
     function saveProactiveStore(store) {
       localStorage.setItem(PROACTIVE_STORAGE_KEY, JSON.stringify(store));
+    }
+
+    function setProactiveSyncStatus(text, tone) {
+      if (!proactiveSyncStatusEl) return;
+      proactiveSyncStatusEl.textContent = text || '';
+      proactiveSyncStatusEl.className = 'proactive-sync-status' + (tone ? ' ' + tone : '');
+    }
+
+    function getClientTimeZone() {
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Taipei';
+      } catch (e) {
+        return 'Asia/Taipei';
+      }
+    }
+
+    function applyCloudProactiveData(data) {
+      if (!data || typeof data !== 'object' || !Array.isArray(data.rules)) return null;
+      var localStore = loadProactiveStore();
+      var nextStore = {
+        globalEnabled: data.globalEnabled !== undefined ? Boolean(data.globalEnabled) : true,
+        sysNotifyEnabled: Boolean(localStore.sysNotifyEnabled),
+        rules: data.rules.map(function (r) {
+          return {
+            id: r.id,
+            title: r.title,
+            message: r.message,
+            scheduleType: r.scheduleType || 'daily',
+            time: r.time || '09:00',
+            intervalMinutes: Number(r.intervalMinutes) || 60,
+            enabled: r.enabled !== undefined ? Boolean(r.enabled) : true,
+            aiGenerated: Boolean(r.aiGenerated || r.ai_generated),
+            createdAt: r.createdAt || new Date().toISOString(),
+            lastTriggeredAt: r.lastTriggeredAt || null
+          };
+        })
+      };
+      saveProactiveStore(nextStore);
+      if (proactiveModalEl && proactiveModalEl.classList.contains('open')) {
+        renderProactivePanel();
+      }
+      return nextStore;
+    }
+
+    async function fetchProactiveFromCloud(quiet) {
+      var cfg = getConfig();
+      if (!cfg.token) {
+        if (!quiet) setProactiveSyncStatus('未連線（僅本機）', '');
+        return false;
+      }
+      if (!quiet) setProactiveSyncStatus('☁️ 載入雲端中...', '');
+      try {
+        var res = await fetch('/v1/pet/proactive?uid=' + encodeURIComponent(cfg.uid), {
+          headers: { 'Authorization': 'Bearer ' + cfg.token }
+        });
+        if (!res.ok) {
+          setProactiveSyncStatus('⚠️ 雲端載入失敗', 'err');
+          return false;
+        }
+        var data = await res.json();
+        if (data && data.ok && Array.isArray(data.rules)) {
+          applyCloudProactiveData(data);
+          setProactiveSyncStatus('☁️ 已從雲端同步', 'ok');
+          return true;
+        }
+      } catch (e) {
+        setProactiveSyncStatus('⚠️ 雲端連線異常', 'err');
+      }
+      return false;
+    }
+
+    async function pushProactiveToCloud(storeOverride) {
+      var cfg = getConfig();
+      if (!cfg.token) {
+        setProactiveSyncStatus('未連線（僅儲存於本機）', '');
+        return false;
+      }
+      var store = storeOverride || loadProactiveStore();
+      setProactiveSyncStatus('☁️ 同步至雲端中...', '');
+      try {
+        var res = await fetch('/v1/pet/proactive', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + cfg.token,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            uid: cfg.uid,
+            globalEnabled: Boolean(store.globalEnabled),
+            timezone: getClientTimeZone(),
+            rules: store.rules
+          })
+        });
+        if (!res.ok) {
+          setProactiveSyncStatus('⚠️ 雲端同步失敗 (' + res.status + ')', 'err');
+          return false;
+        }
+        var data = await res.json();
+        if (data && data.ok && Array.isArray(data.rules)) {
+          applyCloudProactiveData(data);
+          setProactiveSyncStatus('☁️ 已同步至雲端', 'ok');
+          return true;
+        }
+        setProactiveSyncStatus('⚠️ 雲端同步異常', 'err');
+      } catch (e) {
+        setProactiveSyncStatus('⚠️ 雲端同步失敗', 'err');
+      }
+      return false;
     }
 
     function trySendSystemNotification(titleText, bodyText) {
@@ -372,7 +485,7 @@
 
       store.rules.forEach(function (rule) {
         var item = document.createElement('div');
-        item.className = 'rule-item' + (rule.enabled ? '' : ' disabled');
+        item.className = 'rule-item' + (rule.enabled ? '' : ' disabled') + (editingRuleId === rule.id ? ' editing' : '');
 
         var info = document.createElement('div');
         info.className = 'rule-info';
@@ -408,6 +521,13 @@
         var actions = document.createElement('div');
         actions.className = 'rule-actions';
 
+        var editBtn = document.createElement('button');
+        editBtn.className = 'btn-sm';
+        editBtn.textContent = editingRuleId === rule.id ? '編輯中' : '編輯';
+        editBtn.onclick = function () {
+          startEditProactiveRule(rule.id);
+        };
+
         var aiToggleBtn = document.createElement('button');
         aiToggleBtn.className = 'btn-sm' + (rule.aiGenerated ? ' ai-active' : '');
         aiToggleBtn.textContent = rule.aiGenerated ? '✨ AI隨機:開' : '✨ AI隨機:關';
@@ -430,6 +550,7 @@
           deleteProactiveRule(rule.id);
         };
 
+        actions.appendChild(editBtn);
         actions.appendChild(aiToggleBtn);
         actions.appendChild(toggleBtn);
         actions.appendChild(delBtn);
@@ -440,6 +561,54 @@
       });
     }
 
+    function syncRuleTypeInputVisibility() {
+      var val = ruleTypeSelectEl.value;
+      if (val === 'daily') {
+        ruleTimeWrapEl.style.display = 'block';
+        ruleIntervalWrapEl.style.display = 'none';
+      } else {
+        ruleTimeWrapEl.style.display = 'none';
+        ruleIntervalWrapEl.style.display = 'block';
+      }
+    }
+
+    function resetProactiveForm() {
+      editingRuleId = null;
+      ruleTitleInputEl.value = '';
+      ruleMsgInputEl.value = '';
+      ruleTypeSelectEl.value = 'daily';
+      ruleTimeInputEl.value = '09:00';
+      ruleIntervalInputEl.value = '60';
+      if (ruleAiGenInputEl) ruleAiGenInputEl.checked = false;
+      syncRuleTypeInputVisibility();
+      if (addRuleBtnEl) addRuleBtnEl.textContent = '＋ 新增排程';
+      if (cancelEditRuleBtnEl) cancelEditRuleBtnEl.style.display = 'none';
+    }
+
+    function startEditProactiveRule(ruleId) {
+      var store = loadProactiveStore();
+      var target = null;
+      for (var i = 0; i < store.rules.length; i++) {
+        if (store.rules[i].id === ruleId) {
+          target = store.rules[i];
+          break;
+        }
+      }
+      if (!target) return;
+      editingRuleId = ruleId;
+      ruleTitleInputEl.value = target.title || '';
+      ruleMsgInputEl.value = target.message || '';
+      ruleTypeSelectEl.value = target.scheduleType || 'daily';
+      ruleTimeInputEl.value = target.time || '09:00';
+      ruleIntervalInputEl.value = String(target.intervalMinutes || 60);
+      if (ruleAiGenInputEl) ruleAiGenInputEl.checked = Boolean(target.aiGenerated);
+      syncRuleTypeInputVisibility();
+      if (addRuleBtnEl) addRuleBtnEl.textContent = '💾 儲存修改';
+      if (cancelEditRuleBtnEl) cancelEditRuleBtnEl.style.display = 'inline-block';
+      renderProactivePanel();
+      ruleTitleInputEl.focus();
+    }
+
     function toggleProactiveRuleAi(ruleId) {
       var store = loadProactiveStore();
       store.rules.forEach(function (r) {
@@ -447,6 +616,7 @@
       });
       saveProactiveStore(store);
       renderProactivePanel();
+      pushProactiveToCloud(store);
     }
 
     function toggleProactiveRule(ruleId) {
@@ -456,13 +626,18 @@
       });
       saveProactiveStore(store);
       renderProactivePanel();
+      pushProactiveToCloud(store);
     }
 
     function deleteProactiveRule(ruleId) {
       var store = loadProactiveStore();
       store.rules = store.rules.filter(function (r) { return r.id !== ruleId; });
+      if (editingRuleId === ruleId) {
+        resetProactiveForm();
+      }
       saveProactiveStore(store);
       renderProactivePanel();
+      pushProactiveToCloud(store);
     }
 
     async function resolveProactiveMessageText(rule) {
@@ -530,91 +705,132 @@
       }
     }
 
-    function checkDueProactiveRules(forceTriggerFirst) {
-      checkTrackedUpgradeProgress(Boolean(forceTriggerFirst));
-      if (isGeneratingProactiveAi && !forceTriggerFirst) return false;
-      var store = loadProactiveStore();
-      if (!store.globalEnabled) return false;
-
-      var now = new Date();
-      var nowMs = now.getTime();
-      var nowIso = now.toISOString();
-      var todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-      var nowMinutes = now.getHours() * 60 + now.getMinutes();
-      var idleMinutes = (nowMs - lastUserActivityAt) / 60000;
-      var triggeredRule = null;
-
-      for (var i = 0; i < store.rules.length; i++) {
-        var rule = store.rules[i];
-        if (!rule.enabled) continue;
-
-        if (forceTriggerFirst) {
-          triggeredRule = rule;
-          rule.lastTriggeredAt = nowIso;
-          break;
-        }
-
-        if (rule.scheduleType === 'daily') {
-          var parts = (rule.time || '09:00').split(':');
-          var targetMin = (parseInt(parts[0], 10) || 9) * 60 + (parseInt(parts[1], 10) || 0);
-          var diff = nowMinutes - targetMin;
-          var lastDateStr = '';
-          if (rule.lastTriggeredAt) {
-            var ld = new Date(rule.lastTriggeredAt);
-            if (!isNaN(ld.getTime())) {
-              lastDateStr = ld.getFullYear() + '-' + String(ld.getMonth() + 1).padStart(2, '0') + '-' + String(ld.getDate()).padStart(2, '0');
-            }
-          }
-          if (diff >= 0 && diff <= 120 && lastDateStr !== todayStr) {
-            triggeredRule = rule;
-            rule.lastTriggeredAt = nowIso;
-            break;
-          }
-        } else if (rule.scheduleType === 'interval') {
-          var intervalMs = (rule.intervalMinutes || 60) * 60000;
-          var refMs = Date.parse(rule.lastTriggeredAt || rule.createdAt || nowIso);
-          if (!isNaN(refMs) && (nowMs - refMs >= intervalMs)) {
-            triggeredRule = rule;
-            rule.lastTriggeredAt = nowIso;
-            break;
-          }
-        } else if (rule.scheduleType === 'idle') {
-          var needIdle = rule.intervalMinutes || 120;
-          var lastTrigMs = rule.lastTriggeredAt ? Date.parse(rule.lastTriggeredAt) : 0;
-          var cooldownOk = !lastTrigMs || isNaN(lastTrigMs) || (nowMs - lastTrigMs >= needIdle * 60000);
-          if (idleMinutes >= needIdle && cooldownOk) {
-            triggeredRule = rule;
-            rule.lastTriggeredAt = nowIso;
-            break;
-          }
-        }
+    async function claimProactiveRuleOnCloud(ruleId, forceTriggerFirst) {
+      var cfg = getConfig();
+      if (!cfg.token) {
+        return { ok: true, claimed: true, offline: true };
       }
-
-      if (triggeredRule) {
-        saveProactiveStore(store);
-        triggerProactiveRule(triggeredRule);
-        return true;
+      try {
+        var res = await fetch('/v1/pet/proactive/claim', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + cfg.token,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            uid: cfg.uid,
+            ruleId: ruleId,
+            timezone: getClientTimeZone(),
+            force: Boolean(forceTriggerFirst)
+          })
+        });
+        if (!res.ok) {
+          return { ok: false, claimed: false };
+        }
+        var data = await res.json();
+        if (data && data.ok && Array.isArray(data.rules)) {
+          applyCloudProactiveData(data);
+        }
+        return {
+          ok: Boolean(data && data.ok),
+          claimed: Boolean(data && data.claimed),
+          rule: data && Array.isArray(data.rules)
+            ? data.rules.find(function (r) { return r.id === ruleId; })
+            : null
+        };
+      } catch (e) {
+        return { ok: false, claimed: false };
       }
-      return false;
     }
 
-    ruleTypeSelectEl.onchange = function () {
-      var val = ruleTypeSelectEl.value;
-      if (val === 'daily') {
-        ruleTimeWrapEl.style.display = 'block';
-        ruleIntervalWrapEl.style.display = 'none';
-      } else {
-        ruleTimeWrapEl.style.display = 'none';
-        ruleIntervalWrapEl.style.display = 'block';
+    async function checkDueProactiveRules(forceTriggerFirst) {
+      checkTrackedUpgradeProgress(Boolean(forceTriggerFirst));
+      if (isCheckingDueRules && !forceTriggerFirst) return false;
+      if (isGeneratingProactiveAi && !forceTriggerFirst) return false;
+      isCheckingDueRules = true;
+      try {
+        var store = loadProactiveStore();
+        if (!store.globalEnabled) return false;
+
+        var now = new Date();
+        var nowMs = now.getTime();
+        var nowIso = now.toISOString();
+        var todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+        var nowMinutes = now.getHours() * 60 + now.getMinutes();
+        var idleMinutes = (nowMs - lastUserActivityAt) / 60000;
+        var triggeredRule = null;
+
+        for (var i = 0; i < store.rules.length; i++) {
+          var rule = store.rules[i];
+          if (!rule.enabled) continue;
+
+          if (forceTriggerFirst) {
+            triggeredRule = rule;
+            break;
+          }
+
+          if (rule.scheduleType === 'daily') {
+            var parts = (rule.time || '09:00').split(':');
+            var targetMin = (parseInt(parts[0], 10) || 9) * 60 + (parseInt(parts[1], 10) || 0);
+            var diff = nowMinutes - targetMin;
+            var lastDateStr = '';
+            if (rule.lastTriggeredAt) {
+              var ld = new Date(rule.lastTriggeredAt);
+              if (!isNaN(ld.getTime())) {
+                lastDateStr = ld.getFullYear() + '-' + String(ld.getMonth() + 1).padStart(2, '0') + '-' + String(ld.getDate()).padStart(2, '0');
+              }
+            }
+            if (diff >= 0 && diff <= 120 && lastDateStr !== todayStr) {
+              triggeredRule = rule;
+              break;
+            }
+          } else if (rule.scheduleType === 'interval') {
+            var intervalMs = (rule.intervalMinutes || 60) * 60000;
+            var refMs = Date.parse(rule.lastTriggeredAt || rule.createdAt || nowIso);
+            if (!isNaN(refMs) && (nowMs - refMs >= intervalMs)) {
+              triggeredRule = rule;
+              break;
+            }
+          } else if (rule.scheduleType === 'idle') {
+            var needIdle = rule.intervalMinutes || 120;
+            var lastTrigMs = rule.lastTriggeredAt ? Date.parse(rule.lastTriggeredAt) : 0;
+            var cooldownOk = !lastTrigMs || isNaN(lastTrigMs) || (nowMs - lastTrigMs >= needIdle * 60000);
+            if (idleMinutes >= needIdle && cooldownOk) {
+              triggeredRule = rule;
+              break;
+            }
+          }
+        }
+
+        if (!triggeredRule) return false;
+
+        var claimRes = await claimProactiveRuleOnCloud(triggeredRule.id, forceTriggerFirst);
+        if (!claimRes.claimed) {
+          return false;
+        }
+        if (claimRes.offline) {
+          triggeredRule.lastTriggeredAt = nowIso;
+          saveProactiveStore(store);
+        } else if (claimRes.rule) {
+          triggeredRule = claimRes.rule;
+        }
+        triggerProactiveRule(triggeredRule);
+        return true;
+      } finally {
+        isCheckingDueRules = false;
       }
-    };
+    }
+
+    ruleTypeSelectEl.onchange = syncRuleTypeInputVisibility;
 
     document.getElementById('proactiveBtn').onclick = function () {
       renderProactivePanel();
       proactiveModalEl.classList.add('open');
+      fetchProactiveFromCloud(false);
     };
 
     document.getElementById('closeProactiveModalBtn').onclick = function () {
+      resetProactiveForm();
       proactiveModalEl.classList.remove('open');
     };
 
@@ -623,6 +839,7 @@
       store.globalEnabled = !store.globalEnabled;
       saveProactiveStore(store);
       renderProactivePanel();
+      pushProactiveToCloud(store);
     };
 
     if (toggleSysNotifyBtnEl) {
@@ -645,6 +862,13 @@
       };
     }
 
+    if (cancelEditRuleBtnEl) {
+      cancelEditRuleBtnEl.onclick = function () {
+        resetProactiveForm();
+        renderProactivePanel();
+      };
+    }
+
     document.getElementById('addRuleBtn').onclick = function () {
       var stype = ruleTypeSelectEl.value || 'daily';
       var title = ruleTitleInputEl.value.trim() || (stype === 'daily' ? '每日問候' : stype === 'interval' ? '定時提醒' : '閒置關懷');
@@ -654,29 +878,64 @@
       var aiGenVal = Boolean(ruleAiGenInputEl && ruleAiGenInputEl.checked);
 
       var store = loadProactiveStore();
-      store.rules.push({
-        id: 'rule-' + Date.now().toString(36),
-        title: title,
-        message: msg,
-        scheduleType: stype,
-        time: timeVal,
-        intervalMinutes: intervalVal,
-        enabled: true,
-        aiGenerated: aiGenVal,
-        createdAt: new Date().toISOString(),
-        lastTriggeredAt: null
-      });
+      if (editingRuleId) {
+        var updated = false;
+        store.rules = store.rules.map(function (r) {
+          if (r.id === editingRuleId) {
+            updated = true;
+            return {
+              id: r.id,
+              title: title,
+              message: msg,
+              scheduleType: stype,
+              time: timeVal,
+              intervalMinutes: intervalVal,
+              enabled: r.enabled,
+              aiGenerated: aiGenVal,
+              createdAt: r.createdAt || new Date().toISOString(),
+              lastTriggeredAt: r.lastTriggeredAt || null
+            };
+          }
+          return r;
+        });
+        if (!updated) {
+          store.rules.push({
+            id: 'rule-' + Date.now().toString(36),
+            title: title,
+            message: msg,
+            scheduleType: stype,
+            time: timeVal,
+            intervalMinutes: intervalVal,
+            enabled: true,
+            aiGenerated: aiGenVal,
+            createdAt: new Date().toISOString(),
+            lastTriggeredAt: null
+          });
+        }
+      } else {
+        store.rules.push({
+          id: 'rule-' + Date.now().toString(36),
+          title: title,
+          message: msg,
+          scheduleType: stype,
+          time: timeVal,
+          intervalMinutes: intervalVal,
+          enabled: true,
+          aiGenerated: aiGenVal,
+          createdAt: new Date().toISOString(),
+          lastTriggeredAt: null
+        });
+      }
       saveProactiveStore(store);
-      ruleTitleInputEl.value = '';
-      ruleMsgInputEl.value = '';
-      if (ruleAiGenInputEl) ruleAiGenInputEl.checked = false;
+      resetProactiveForm();
       renderProactivePanel();
+      pushProactiveToCloud(store);
     };
 
-    document.getElementById('testProactiveBubbleBtn').onclick = function () {
-      var triggered = checkDueProactiveRules(false);
+    document.getElementById('testProactiveBubbleBtn').onclick = async function () {
+      var triggered = await checkDueProactiveRules(false);
       if (!triggered) {
-        checkDueProactiveRules(true);
+        await checkDueProactiveRules(true);
       }
       proactiveModalEl.classList.remove('open');
     };
@@ -689,10 +948,7 @@
         return;
       }
       var store = loadProactiveStore();
-      var summaryText = '請使用 manage_proactive_messages 工具同步我的主動訊息設定（包含每筆規則的 ai_generated 欄位），目前總開關為 ' + (store.globalEnabled ? 'true' : 'false') + '，共有 ' + store.rules.length + ' 筆規則：' + JSON.stringify(store.rules);
-      proactiveModalEl.classList.remove('open');
-      inputEl.value = summaryText;
-      sendMessage();
+      await pushProactiveToCloud(store);
     };
 
     document.getElementById('proactiveCloseBtn').onclick = function () {
@@ -709,6 +965,7 @@
 
     window.addEventListener('pointerdown', markUserActivity);
     ensureUpgradeWatchTimer();
+    fetchProactiveFromCloud(true);
     setTimeout(function () {
       checkTrackedUpgradeProgress(true);
     }, 2500);

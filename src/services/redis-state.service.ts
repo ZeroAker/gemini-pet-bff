@@ -450,4 +450,27 @@ export class StateService {
     await this.saveSkills(userId, skills);
     return { ok: true, deleted: true };
   }
+
+  async acquireProactiveLock(userId: string): Promise<boolean> {
+    const res = await this.command<string | null>(['SET', `lock:proactive:${userId}`, '1', 'EX', 15, 'NX']);
+    return res === 'OK';
+  }
+
+  async releaseProactiveLock(userId: string): Promise<void> {
+    await this.command(['DEL', `lock:proactive:${userId}`]);
+  }
+
+  async getProactiveStore<T = unknown>(userId: string): Promise<T | null> {
+    const raw = await this.command<string | null>(['GET', `proactive:${userId}`]);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveProactiveStore(userId: string, store: unknown): Promise<void> {
+    await this.command(['SET', `proactive:${userId}`, JSON.stringify(store)]);
+  }
 }

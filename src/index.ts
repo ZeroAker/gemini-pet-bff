@@ -3,6 +3,11 @@ import { DreamService } from './dream';
 import { requireBffAuth } from './middleware/auth';
 import { computeNextLifecycleState } from './plugins/lifecycle';
 import { petCareGamePlugin } from './plugins/pet-care-game';
+import {
+  claimProactiveRuleTriggerForApi,
+  getProactiveScheduleForApi,
+  setProactiveScheduleForApi,
+} from './plugins/proactive-messages';
 import { getStickerById, getUserStickers, STICKER_PACK_VERSION, toStickerPayload } from './plugins/stickers';
 import { handlePetInteract } from './routes/pet-interact';
 import { GeminiService, StateService } from './services';
@@ -263,6 +268,112 @@ app.get('/v1/pet/upgrade/status', async (c) => {
     elapsed_sec: status.started_at ? Math.floor((Date.now() - Date.parse(status.started_at)) / 1000) : 0,
     is_stale: isStale,
   });
+});
+
+app.get('/v1/pet/proactive', async (c) => {
+  const userId = c.req.query('uid') || 'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const store = await getProactiveScheduleForApi(userId, stateSvc);
+  return c.json({
+    ok: true,
+    userId: store.userId,
+    globalEnabled: store.globalEnabled,
+    timezone: store.timezone,
+    updatedAt: store.updatedAt,
+    rules: store.rules,
+  });
+});
+
+async function handleSetProactiveSchedule(c: {
+  req: {
+    query: (k: string) => string | undefined;
+    json: <T>() => Promise<T>;
+  };
+  env: Env;
+  json: (data: unknown, status?: number) => Response;
+}): Promise<Response> {
+  let body: Record<string, unknown> = {};
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json({ ok: false, error: 'Invalid JSON body' }, 400);
+  }
+
+  const userId =
+    (typeof body.uid === 'string' && body.uid.trim()) ||
+    c.req.query('uid') ||
+    'zero_main';
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+
+  const locked = await stateSvc.acquireProactiveLock(userId);
+  if (!locked) {
+    return c.json({ ok: false, error: '主動排程同步中，請稍候再試' }, 429);
+  }
+
+  try {
+    const store = await setProactiveScheduleForApi(userId, stateSvc, {
+      globalEnabled: body.globalEnabled,
+      timezone: body.timezone,
+      rules: body.rules,
+    });
+    return c.json({
+      ok: true,
+      userId: store.userId,
+      globalEnabled: store.globalEnabled,
+      timezone: store.timezone,
+      updatedAt: store.updatedAt,
+      rules: store.rules,
+    });
+  } finally {
+    await stateSvc.releaseProactiveLock(userId);
+  }
+}
+
+app.post('/v1/pet/proactive', (c) => handleSetProactiveSchedule(c as never));
+app.put('/v1/pet/proactive', (c) => handleSetProactiveSchedule(c as never));
+
+app.post('/v1/pet/proactive/claim', async (c) => {
+  let body: Record<string, unknown> = {};
+  try {
+    body = await c.req.json<Record<string, unknown>>();
+  } catch {
+    return c.json({ ok: false, error: 'Invalid JSON body' }, 400);
+  }
+
+  const userId =
+    (typeof body.uid === 'string' && body.uid.trim()) ||
+    c.req.query('uid') ||
+    'zero_main';
+  const ruleId = typeof body.ruleId === 'string' ? body.ruleId.trim() : '';
+  if (!ruleId) {
+    return c.json({ ok: false, error: 'Missing ruleId' }, 400);
+  }
+
+  const stateSvc = new StateService(c.env.UPSTASH_REDIS_REST_URL, c.env.UPSTASH_REDIS_REST_TOKEN);
+  const locked = await stateSvc.acquireProactiveLock(userId);
+  if (!locked) {
+    return c.json({ ok: false, claimed: false, error: '排程觸發檢查中，請稍候再試' }, 429);
+  }
+
+  try {
+    const result = await claimProactiveRuleTriggerForApi(userId, stateSvc, {
+      ruleId,
+      timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
+      force: Boolean(body.force),
+    });
+    return c.json({
+      ok: true,
+      claimed: result.claimed,
+      reason: result.reason || null,
+      userId: result.store.userId,
+      globalEnabled: result.store.globalEnabled,
+      timezone: result.store.timezone,
+      updatedAt: result.store.updatedAt,
+      rules: result.store.rules,
+    });
+  } finally {
+    await stateSvc.releaseProactiveLock(userId);
+  }
 });
 
 app.post('/v1/pet/interact', handlePetInteract);

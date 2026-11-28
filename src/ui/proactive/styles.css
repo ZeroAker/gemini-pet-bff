@@ -74,3 +74,7 @@
     }
     .rule-msg { font-size: 12px; color: #9aa3bd; word-break: break-word; }
     .rule-actions { display: flex; gap: 5px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+    .rule-item.editing { border-color: #6c5ce7; background: #191e33; }
+    .proactive-sync-status { font-size: 11px; color: #9aa3bd; }
+    .proactive-sync-status.ok { color: #81ecec; }
+    .proactive-sync-status.err { color: #ff7675; }

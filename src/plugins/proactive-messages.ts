@@ -1028,7 +1028,37 @@ function sanitizeStore(raw: unknown, userId: string): ProactiveUserStore {
   };
 }
 
+function extractStateSvcFromContext(ctx: { userId: string }): {
+  getProactiveStore?: <T = unknown>(userId: string) => Promise<T | null>;
+  saveProactiveStore?: (userId: string, store: unknown) => Promise<void>;
+} | null {
+  const raw = ctx as unknown as {
+    stateSvc?: {
+      getProactiveStore?: <T = unknown>(userId: string) => Promise<T | null>;
+      saveProactiveStore?: (userId: string, store: unknown) => Promise<void>;
+    };
+  };
+  if (raw?.stateSvc && typeof raw.stateSvc.getProactiveStore === 'function') {
+    return raw.stateSvc;
+  }
+  return null;
+}
+
 async function loadUserStore(userId: string, ctx: { userId: string }): Promise<ProactiveUserStore> {
+  const stateSvc = extractStateSvcFromContext(ctx);
+  if (stateSvc?.getProactiveStore) {
+    try {
+      const redisRaw = await stateSvc.getProactiveStore<unknown>(userId);
+      if (redisRaw) {
+        const parsed = sanitizeStore(redisRaw, userId);
+        MEMORY_STORE.set(userId, parsed);
+        return parsed;
+      }
+    } catch {
+      // fallback to kv / cache / memory
+    }
+  }
+
   const key = buildStorageKey(userId);
   const kv = extractKvFromContext(ctx);
   if (kv) {
@@ -1073,6 +1103,16 @@ async function saveUserStore(store: ProactiveUserStore, ctx: { userId: string })
   store.updatedAt = new Date().toISOString();
   store.upgradeTracking.reportedRunKeys = store.upgradeTracking.reportedRunKeys.slice(-20);
   MEMORY_STORE.set(store.userId, store);
+
+  const stateSvc = extractStateSvcFromContext(ctx);
+  if (stateSvc?.saveProactiveStore) {
+    try {
+      await stateSvc.saveProactiveStore(store.userId, store);
+    } catch {
+      // ignore redis write failure and continue fallback writes
+    }
+  }
+
   const serialized = JSON.stringify(store);
 
   const cache = getWorkersCache();
@@ -2690,3 +2730,101 @@ export const proactiveMessagesPlugin: PluginTool = {
     };
   },
 };
+
+export async function getProactiveScheduleForApi(
+  userId: string,
+  stateSvc: PluginContext['stateSvc']
+): Promise<ProactiveUserStore> {
+  return loadUserStore(userId, { userId, stateSvc } as PluginContext);
+}
+
+export async function setProactiveScheduleForApi(
+  userId: string,
+  stateSvc: PluginContext['stateSvc'],
+  payload: {
+    globalEnabled?: unknown;
+    timezone?: unknown;
+    rules?: unknown;
+  }
+): Promise<ProactiveUserStore> {
+  const ctx = { userId, stateSvc } as PluginContext;
+  const current = await loadUserStore(userId, ctx);
+  const nextRaw: Record<string, unknown> = {
+    userId,
+    globalEnabled: payload.globalEnabled !== undefined ? payload.globalEnabled : current.globalEnabled,
+    timezone: asTrimmedString(payload.timezone) || current.timezone || DEFAULT_TIMEZONE,
+    lastInteractionAt: current.lastInteractionAt,
+    updatedAt: new Date().toISOString(),
+    rules: Array.isArray(payload.rules) ? payload.rules : current.rules,
+    upgradeTracking: current.upgradeTracking,
+  };
+  const nextStore = sanitizeStore(nextRaw, userId);
+  await saveUserStore(nextStore, ctx);
+  return nextStore;
+}
+
+export async function claimProactiveRuleTriggerForApi(
+  userId: string,
+  stateSvc: PluginContext['stateSvc'],
+  payload: {
+    ruleId: string;
+    timezone?: string;
+    force?: boolean;
+  }
+): Promise<{
+  claimed: boolean;
+  reason?: string;
+  store: ProactiveUserStore;
+  rule?: ProactiveRule;
+}> {
+  const ctx = { userId, stateSvc } as PluginContext;
+  const store = await loadUserStore(userId, ctx);
+  const rule = store.rules.find((r) => r.id === payload.ruleId);
+  const force = Boolean(payload.force);
+
+  if (!rule) {
+    return { claimed: false, reason: 'rule_not_found', store };
+  }
+  if (!force && !store.globalEnabled) {
+    return { claimed: false, reason: 'global_disabled', store, rule };
+  }
+  if (!force && !rule.enabled) {
+    return { claimed: false, reason: 'rule_disabled', store, rule };
+  }
+
+  const now = new Date();
+  const nowMs = now.getTime();
+  const nowIso = now.toISOString();
+  const tz = asTrimmedString(payload.timezone) || store.timezone || DEFAULT_TIMEZONE;
+
+  if (!force) {
+    if (rule.scheduleType === 'daily') {
+      const todayStr = getZonedDateTime(now, tz).dateStr;
+      if (rule.lastTriggeredAt) {
+        const parsedLast = new Date(rule.lastTriggeredAt);
+        if (!Number.isNaN(parsedLast.getTime())) {
+          const lastDateStr = getZonedDateTime(parsedLast, tz).dateStr;
+          if (lastDateStr === todayStr) {
+            return { claimed: false, reason: 'already_triggered_today', store, rule };
+          }
+        }
+      }
+    } else if (rule.scheduleType === 'interval') {
+      const intervalMs = (rule.intervalMinutes || 60) * 60000;
+      const refMs = Date.parse(rule.lastTriggeredAt || rule.createdAt || nowIso);
+      if (!Number.isNaN(refMs) && nowMs - refMs < intervalMs) {
+        return { claimed: false, reason: 'interval_cooldown', store, rule };
+      }
+    } else if (rule.scheduleType === 'idle') {
+      const needIdleMs = (rule.intervalMinutes || 120) * 60000;
+      const lastTrigMs = rule.lastTriggeredAt ? Date.parse(rule.lastTriggeredAt) : 0;
+      if (lastTrigMs && !Number.isNaN(lastTrigMs) && nowMs - lastTrigMs < needIdleMs) {
+        return { claimed: false, reason: 'idle_cooldown', store, rule };
+      }
+    }
+  }
+
+  rule.lastTriggeredAt = nowIso;
+  await saveUserStore(store, ctx);
+  return { claimed: true, store, rule };
+}
